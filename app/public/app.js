@@ -48,24 +48,29 @@ function refreshSelbar() {
 function deckName(deck) { return deck === 0 ? "PREP" : `Deck ${deck}`; }
 
 function rowHtml(s, kind) {
-  const path = s.absPath || "";
-  const drag = kind === "library" && path ? `draggable="true" data-path="${esc(path)}"` : "";
-  const id = s.ownedId || s.id || "";
-  const bpm = s.bpm ? Math.round(s.bpm) : "–";
+  const path = s.absPath || "";                       // present for library + owned-spotify
+  const id = s.id || "";
+  const draggable = path ? `draggable="true" data-path="${esc(path)}"` : "";
+  const bpm = s.bpm ? Math.round(s.bpm) : "";
   const mult = s.bpmMult ? `<span class="rmult">${s.bpmMult}</span>` : "";
   const key = s.camelot ? `<span class="keybadge" style="${keyBadgeStyle(s.camelot)}">${esc(s.camelot)}</span>` : `<span></span>`;
-  const shift = kind === "library" ? `<span class="shift">${shiftLabel(s.keyShift)}</span>` : `<span class="shift">${s.owned ? "OWN" : "SP"}</span>`;
-  const check = kind === "library"
-    ? `<span class="rcheck ${selected.has(id) ? "" : ""}" data-check="${esc(id)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5 9-10" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`
-    : `<span class="src ${s.owned ? "lib" : "sp"}"></span>`;
-  const cls = kind === "library" && selected.has(id) ? "drow sel" : "drow";
-  const clickable = kind === "spotify" && s.owned ? `data-prep="${esc(id)}"` : "";
-  return `<div class="${cls}" ${drag} ${clickable} data-id="${esc(id)}">
-    ${check}
+  // right cell: harmonic shift when we know the key, else a source tag
+  const right = s.keyShift != null
+    ? `<span class="shift">${shiftLabel(s.keyShift)}</span>`
+    : kind === "spotify"
+      ? `<span class="shift">${s.owned ? "OWN" : "SP"}</span>`
+      : `<span class="shift"></span>`;
+  // left cell: a checkbox for real files (crate-exportable), a source dot for streaming-only
+  const left = path
+    ? `<span class="rcheck" data-check="${esc(id)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5 9-10" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`
+    : `<span class="src sp"></span>`;
+  const cls = path && selected.has(id) ? "drow sel" : "drow";
+  return `<div class="${cls}" ${draggable} data-id="${esc(id)}">
+    ${left}
     <div class="rmain"><div class="rt">${esc(s.title)}</div><div class="ra">${esc(s.artist || "")}</div></div>
     <span class="rbpm">${bpm}${mult}</span>
     ${key}
-    ${shift}
+    ${right}
   </div>`;
 }
 
@@ -124,11 +129,14 @@ function deckColumnHtml(dk, prep) {
   const activeFilters = (dk.filter?.keys?.length ? 1 : 0) + (dk.filter?.bpm && dk.filter.bpm !== "any" ? 1 : 0) + (dk.filter?.clean && dk.filter.clean !== "any" ? 1 : 0);
   const fcount = activeFilters ? `<span class="fc">${activeFilters}</span>` : "";
   const stream = streamingByDeck[dk.deck];
-  const spSection = stream
-    ? (stream.connected
-        ? sectionHtml(dk, "spotify", stream.tracks || [], (stream.tracks || []).length, "No streaming picks.")
-        : `<div class="recsec spotify"><div class="rechead"><span class="sp-dot"></span> RECOMMENDATIONS FROM SPOTIFY</div><div class="connect">Connect Spotify in <b>Settings</b> (gear, top-right) to surface tracks beyond your library.</div></div>`)
-    : "";
+  let spSection;
+  if (stream && stream.connected) {
+    spSection = sectionHtml(dk, "spotify", stream.tracks || [], (stream.tracks || []).length, "No streaming picks.");
+  } else if (streamingStatusGlobal.connected) {
+    spSection = `<div class="recsec spotify"><div class="rechead"><span class="sp-dot"></span> RECOMMENDATIONS FROM SPOTIFY</div><div class="connect">Loading…</div></div>`;
+  } else {
+    spSection = `<div class="recsec spotify"><div class="rechead"><span class="sp-dot"></span> RECOMMENDATIONS FROM SPOTIFY</div><div class="connect">Connect Spotify in <b>Settings</b> (gear, top-right) to surface tracks beyond your library.</div></div>`;
+  }
   return `<div class="deckcol" data-deck="${dk.deck}">
     <div class="deckhead ${prep ? "prep" : ""}">
       <span class="deckname">${deckName(dk.deck)}</span>
@@ -382,7 +390,9 @@ function connect() {
     const d = JSON.parse(ev.data);
     setConnected(true, `${d.librarySize.toLocaleString()} tracks`);
     if (d.energyDirection) for (const b of el("energySeg").children) b.classList.toggle("on", b.dataset.dir === d.energyDirection);
+    if (d.streaming) streamingStatusGlobal = d.streaming;
     syncSettings(d.settings);
+    if (lastDecks) render();
   });
   es.addEventListener("decks", (ev) => { lastDecks = JSON.parse(ev.data); render(); });
   es.addEventListener("streaming", (ev) => renderStreaming(JSON.parse(ev.data)));

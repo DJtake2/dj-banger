@@ -32,8 +32,9 @@ export interface StreamingTrack {
   spotifyUrl?: string;
   /** true if a same-title+artist track exists in the user's library. */
   owned: boolean;
-  /** owned track id (for drag / prep) when owned. */
-  ownedId?: string;
+  /** The matched library track (carries key/BPM/energy) when owned — Spotify can't give a new
+   *  app key/BPM, so we borrow them from your own library for tracks you already have. */
+  ownedTrack?: Track;
 }
 
 export function streamingStatus(): { connected: boolean; provider: string; note?: string } {
@@ -79,10 +80,10 @@ async function api(path: string, tok: string): Promise<any> {
 function normalize(s: string): string {
   return s.toLowerCase().replace(/\([^)]*\)/g, "").replace(/[^a-z0-9]+/g, " ").trim();
 }
-function buildOwnedIndex(library: Track[]): Map<string, string> {
-  const idx = new Map<string, string>();
+function buildOwnedIndex(library: Track[]): Map<string, Track> {
+  const idx = new Map<string, Track>();
   for (const t of library) {
-    idx.set(`${normalize(t.artist)}|${normalize(t.title)}`, t.id);
+    idx.set(`${normalize(t.artist)}|${normalize(t.title)}`, t);
   }
   return idx;
 }
@@ -130,13 +131,13 @@ export async function streamingRecommend(seed: { title: string; artist: string }
       const key = `${normalize(primary)}|${normalize(title)}`;
       if (seenKey.has(key)) continue;
       seenKey.add(key);
-      const ownedId = owned.get(key);
+      const ownedTrack = owned.get(key);
       out.push({
         title,
         artist: primary,
         spotifyUrl: tr.external_urls?.spotify,
-        owned: !!ownedId,
-        ownedId,
+        owned: !!ownedTrack,
+        ownedTrack,
       });
       if (out.length >= 12) return out;
     }

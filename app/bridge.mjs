@@ -226,11 +226,26 @@ function broadcastDecks(source = "live") {
   return decks;
 }
 
+/** Wire a streaming pick for the UI. Owned tracks borrow key/BPM/shift from the library. */
+function streamWire(st, seed) {
+  const t = st.ownedTrack;
+  if (t) {
+    const rel = bpmRelation(seed?.bpm, t.bpm);
+    return {
+      title: st.title, artist: st.artist, owned: true, id: t.id, absPath: t.absPath,
+      camelot: t.key?.camelot ?? null, bpm: t.bpm ?? null, bpmMult: rel.mult,
+      keyShift: keyShift(seed?.key, t.key), energy: t.energy ?? null,
+    };
+  }
+  return { title: st.title, artist: st.artist, owned: false, spotifyUrl: st.spotifyUrl };
+}
+
 /** Per-deck streaming (Spotify) lookup → broadcast tagged with the deck. */
 async function emitStreamingForDeck(deck, seed) {
   if (!seed) return;
   try {
-    const tracks = await streamingRecommend(seed, loopHandle.pool);
+    const raw = await streamingRecommend(seed, loopHandle.pool);
+    const tracks = raw.map((st) => streamWire(st, seed));
     if (deckSeeds[deck] && deckSeeds[deck].id === seed.id) {
       broadcast("streaming", { deck, seedId: seed.id, ...streamingStatus(), tracks });
     }
