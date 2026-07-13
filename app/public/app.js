@@ -29,12 +29,18 @@ function shiftLabel(n) {
 }
 
 const SNOWFLAKE = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 2v20M4 6l16 12M20 6 4 18" stroke-linecap="round"/></svg>`;
+const SPOTIFY_LOGO = `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm4.6 14.4a.62.62 0 0 1-.86.21c-2.35-1.44-5.3-1.76-8.79-.96a.62.62 0 1 1-.28-1.22c3.8-.87 7.08-.5 9.72 1.11.3.18.39.57.21.86zm1.23-2.73a.78.78 0 0 1-1.07.26c-2.69-1.65-6.79-2.13-9.97-1.17a.78.78 0 1 1-.45-1.49c3.63-1.1 8.15-.56 11.24 1.33.37.23.49.71.25 1.07zm.11-2.85C14.32 8.9 9.1 8.73 6.03 9.66a.94.94 0 1 1-.54-1.8c3.53-1.07 9.29-.86 12.95 1.31a.94.94 0 0 1-.96 1.61z"/></svg>`;
 
 // ---- state -----------------------------------------------------------------
 let lastDecks = null;             // last "decks" payload
 const streamingByDeck = {};       // deck -> { connected, tracks }
 let streamingStatusGlobal = { connected: false };
 let openFilterDeck = null;        // which deck's filter popover is open
+let activeTabDeck = null;         // in narrow mode, which deck is shown
+let currentView = "home";
+const mql = window.matchMedia("(max-width: 700px)");
+let narrow = mql.matches;
+mql.addEventListener("change", (e) => { narrow = e.matches; render(); });
 
 // ---- multi-select → crate --------------------------------------------------
 const selected = new Map();
@@ -60,11 +66,12 @@ function rowHtml(s, kind) {
     : kind === "spotify"
       ? `<span class="shift">${s.owned ? "OWN" : "SP"}</span>`
       : `<span class="shift"></span>`;
-  // left cell: a checkbox for real files (crate-exportable), a source dot for streaming-only
-  const left = path
-    ? `<span class="rcheck" data-check="${esc(id)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5 9-10" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`
-    : `<span class="src sp"></span>`;
-  const cls = path && selected.has(id) ? "drow sel" : "drow";
+  // left cell: source icon (snowflake = your library, Spotify logo = streaming). Library rows
+  // are click-to-select for crate export (a check overlays the snowflake when selected).
+  const left = kind === "spotify"
+    ? `<span class="rsrc sp">${SPOTIFY_LOGO}</span>`
+    : `<span class="rsrc lib" data-check="${esc(id)}">${SNOWFLAKE}<svg class="chk" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5 9-10" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`;
+  const cls = kind !== "spotify" && selected.has(id) ? "drow sel" : "drow";
   return `<div class="${cls}" ${draggable} data-id="${esc(id)}">
     ${left}
     <div class="rmain"><div class="rt">${esc(s.title)}</div><div class="ra">${esc(s.artist || "")}</div></div>
@@ -162,9 +169,22 @@ function deckColumnHtml(dk, prep) {
 function render() {
   if (!lastDecks || !lastDecks.decks?.length) return;
   const wrap = el("decksWrap");
+  const tabs = el("deckTabs");
   const prep = lastDecks.source === "prep";
   const decks = prep ? lastDecks.decks.filter((d) => d.deck === 0) : lastDecks.decks.filter((d) => d.deck !== 0);
-  const shown = decks.length ? decks : lastDecks.decks;
+  const all = decks.length ? decks : lastDecks.decks;
+
+  // Narrow window → deck tabs + a single active column; wide → both columns side by side.
+  let shown = all;
+  if (narrow && all.length > 1 && !prep) {
+    if (activeTabDeck == null || !all.some((d) => d.deck === activeTabDeck)) activeTabDeck = all[0].deck;
+    shown = all.filter((d) => d.deck === activeTabDeck);
+    tabs.hidden = false;
+    tabs.innerHTML = all.map((d) => `<button class="${d.deck === activeTabDeck ? "on" : ""}" data-tab="${d.deck}">Deck ${d.deck}</button>`).join("");
+    for (const b of tabs.querySelectorAll("button")) b.addEventListener("click", () => { activeTabDeck = Number(b.dataset.tab); render(); });
+  } else {
+    tabs.hidden = true;
+  }
 
   // preserve scroll positions
   const scrolls = {};
@@ -203,10 +223,9 @@ function renderStreaming(d) {
 }
 
 // ---- interactions ----------------------------------------------------------
-function wireDecks() {
-  const wrap = el("decksWrap");
-  // drag library rows to Serato
-  for (const row of wrap.querySelectorAll('.drow[draggable="true"]')) {
+// Drag-to-Serato + crate-select wiring, reusable for the deck columns AND the charts view.
+function wireRows(root) {
+  for (const row of root.querySelectorAll('.drow[draggable="true"]')) {
     row.addEventListener("dragstart", async (e) => {
       row.classList.add("dragging");
       const path = row.dataset.path;
@@ -224,11 +243,10 @@ function wireDecks() {
     });
     row.addEventListener("dragend", () => row.classList.remove("dragging"));
   }
-  // checkbox select (crate)
-  for (const chk of wrap.querySelectorAll(".rcheck")) {
+  for (const chk of root.querySelectorAll(".rsrc.lib[data-check]")) {
     chk.addEventListener("mousedown", (e) => e.stopPropagation());
     chk.addEventListener("click", (e) => {
-      e.stopPropagation();
+      e.stopPropagation(); e.preventDefault();
       const id = chk.dataset.check;
       const row = chk.closest(".drow");
       if (selected.has(id)) { selected.delete(id); row.classList.remove("sel"); }
@@ -236,10 +254,11 @@ function wireDecks() {
       refreshSelbar();
     });
   }
-  // owned spotify rows → prep
-  for (const row of wrap.querySelectorAll(".drow[data-prep]")) {
-    row.addEventListener("click", () => post("/seed", { id: row.dataset.prep }));
-  }
+}
+
+function wireDecks() {
+  const wrap = el("decksWrap");
+  wireRows(wrap);
   // filter button + popover
   for (const btn of wrap.querySelectorAll(".filterbtn")) {
     btn.addEventListener("click", (e) => {
@@ -313,6 +332,38 @@ el("energySeg").addEventListener("click", (e) => {
   for (const b of el("energySeg").children) b.classList.toggle("on", b === btn);
   post("/config", { energyDirection: btn.dataset.dir });
 });
+
+// ---- nav (Home / Charts) ---------------------------------------------------
+el("nav").addEventListener("click", (e) => {
+  const btn = e.target.closest(".navtab");
+  if (!btn) return;
+  for (const b of el("nav").children) b.classList.toggle("on", b === btn);
+  currentView = btn.dataset.view;
+  el("homeView").hidden = currentView !== "home";
+  el("chartsView").hidden = currentView !== "charts";
+  if (currentView === "charts") { el("deckTabs").hidden = true; loadCharts(); }
+  else render(); // home → render() re-establishes deck tabs if narrow
+});
+
+async function loadCharts() {
+  const scroll = el("chartsScroll");
+  scroll.innerHTML = `<div class="empty"><div class="big">Loading charts…</div></div>`;
+  try {
+    const d = await (await fetch("/charts")).json();
+    if (!d.connected) {
+      scroll.innerHTML = `<div class="empty"><div class="big">Connect Spotify to see charts</div>
+        <div>Open Settings (gear, top-right) and add your Spotify credentials.<br>Charts pull Spotify's Top 50 &amp; Viral playlists — owned tracks are draggable to a deck.</div></div>`;
+      return;
+    }
+    if (!d.charts?.length) { scroll.innerHTML = `<div class="empty"><div class="big">No charts available right now</div></div>`; return; }
+    scroll.innerHTML = `<div class="charts-cols">` + d.charts.map((c) => `
+      <div class="chart">
+        <h3>${SPOTIFY_LOGO} ${esc(c.name)} <span style="color:var(--text-faint);font-weight:600;margin-left:auto">${c.tracks.length}</span></h3>
+        <div class="reclist">${c.tracks.map((t) => rowHtml(t, t.owned ? "library" : "spotify")).join("")}</div>
+      </div>`).join("") + `</div>`;
+    wireRows(scroll);
+  } catch { scroll.innerHTML = `<div class="empty"><div class="big">Charts unavailable</div></div>`; }
+}
 
 // ---- settings modal --------------------------------------------------------
 const modal = el("settingsModal");

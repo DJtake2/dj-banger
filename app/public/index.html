@@ -16,6 +16,10 @@
         </span>
         BANGER <span class="dim">· serato</span>
       </div>
+      <div class="nav" id="nav">
+        <button class="navtab on" data-view="home">Home</button>
+        <button class="navtab" data-view="charts">Charts</button>
+      </div>
       <div class="status">
         <span id="statusDot" class="dot off"></span>
         <span id="statusText">connecting…</span>
@@ -41,12 +45,24 @@
       <div class="dropdown" id="dropdown" hidden></div>
     </div>
 
-    <!-- Two-column deck split — each deck shows its own library + Spotify recs at once -->
-    <div class="decks-wrap" id="decksWrap">
-      <div class="empty" id="empty">
-        <div class="spinner"></div>
-        <div class="big">Waiting for Serato…</div>
-        <div>Play a track on a deck and suggestions appear here.</div>
+    <!-- Deck tabs (shown only when the window is too narrow for two columns) -->
+    <div class="deck-tabs" id="deckTabs" hidden></div>
+
+    <!-- HOME view: two-column deck split (side by side when wide, tabbed when narrow) -->
+    <div class="view" id="homeView">
+      <div class="decks-wrap" id="decksWrap">
+        <div class="empty" id="empty">
+          <div class="spinner"></div>
+          <div class="big">Waiting for Serato…</div>
+          <div>Play a track on a deck and suggestions appear here.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CHARTS view -->
+    <div class="view" id="chartsView" hidden>
+      <div class="charts-scroll" id="chartsScroll">
+        <div class="empty"><div class="big">Loading charts…</div></div>
       </div>
     </div>
 

@@ -88,6 +88,50 @@ function buildOwnedIndex(library: Track[]): Map<string, Track> {
   return idx;
 }
 
+// Public Spotify-owned chart playlists (fetchable with client-credentials).
+const CHART_PLAYLISTS = [
+  { name: "Top 50 – USA", id: "37i9dQZEVXbLRQDuF5jeBp" },
+  { name: "Top 50 – Global", id: "37i9dQZEVXbMDoHDwVN2tF" },
+  { name: "Viral 50 – Global", id: "37i9dQZEVXbLiRSasKsNU9" },
+];
+
+export interface Chart {
+  name: string;
+  tracks: StreamingTrack[];
+}
+
+/** Fetch Spotify's editorial charts (Top 50 / Viral). [] when not connected. */
+export async function spotifyCharts(library: Track[]): Promise<Chart[]> {
+  const tok = await getToken();
+  if (!tok) return [];
+  const owned = buildOwnedIndex(library);
+  const out: Chart[] = [];
+  for (const chart of CHART_PLAYLISTS) {
+    try {
+      const data = await api(
+        `/playlists/${chart.id}/tracks?limit=50&fields=${encodeURIComponent("items(track(name,artists(name),external_urls))")}`,
+        tok,
+      );
+      const tracks: StreamingTrack[] = [];
+      const seen = new Set<string>();
+      for (const it of data?.items ?? []) {
+        const tr = it?.track;
+        if (!tr?.name) continue;
+        const primary = (tr.artists?.[0]?.name as string) ?? "";
+        const key = `${normalize(primary)}|${normalize(tr.name)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const ownedTrack = owned.get(key);
+        tracks.push({ title: tr.name, artist: primary, spotifyUrl: tr.external_urls?.spotify, owned: !!ownedTrack, ownedTrack });
+      }
+      if (tracks.length) out.push({ name: chart.name, tracks });
+    } catch {
+      /* a chart may be unavailable to the API — skip it */
+    }
+  }
+  return out;
+}
+
 /**
  * Discovery tracks for a seed. Returns [] (not connected) when no creds.
  * Uses artist search → artist top-tracks + related-artists' top-tracks.

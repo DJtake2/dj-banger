@@ -23,7 +23,7 @@ import { startLiveLoop } from "../src/live.ts";
 import { recommend } from "../src/engine.ts";
 import { keyCompatibility } from "../src/camelot.ts";
 import { writeSuggestionsCrate } from "../src/serato/crateWriter.ts";
-import { streamingRecommend, streamingStatus, setSpotifyCreds } from "../src/streaming/spotify.ts";
+import { streamingRecommend, streamingStatus, setSpotifyCreds, spotifyCharts } from "../src/streaming/spotify.ts";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(__dir, "public");
@@ -73,9 +73,10 @@ function keyShift(seedKey, candKey) {
 
 /** Does a candidate pass a deck's filter (relative to that deck's seed)? */
 function passesDeckFilter(t, seed, f) {
-  // Clean / dirty
-  if (f.clean === "clean" && /\b(dirty|explicit)\b/i.test(t.title)) return false;
-  if (f.clean === "dirty" && /\bclean\b/i.test(t.title)) return false;
+  // Clean / dirty — STRICT: only tracks explicitly labelled as such. If a track isn't clearly
+  // marked clean or dirty, it is excluded whenever one of these filters is active.
+  if (f.clean === "clean" && !/\bclean\b/i.test(t.title)) return false;
+  if (f.clean === "dirty" && !/\b(dirty|explicit)\b/i.test(t.title)) return false;
   // BPM
   if (f.bpm === "3" || f.bpm === "5" || f.bpm === "10") {
     const d = effectiveBpmDelta(seed?.bpm, t.bpm);
@@ -379,28 +380,43 @@ async function main() {
       return;
     }
 
-    // Typeahead search over the library for the prep-mode box.
+    // Charts (Spotify Top 50 / Viral) — needs Spotify connected.
+    if (url.pathname === "/charts") {
+      try {
+        const charts = await spotifyCharts(loopHandle.pool);
+        const wired = charts.map((c) => ({ name: c.name, tracks: c.tracks.map((st) => streamWire(st, null)) }));
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ...streamingStatus(), charts: wired }));
+      } catch (e) {
+        res.writeHead(200).end(JSON.stringify({ connected: false, charts: [], error: String(e.message || e) }));
+      }
+      return;
+    }
+
+    // Extensive search across the WHOLE library. Token-based: every word in the query must
+    // appear somewhere in "artist title" (order-independent), so it pulls in anything related
+    // rather than only exact phrases. Ranks phrase/prefix hits first.
     if (url.pathname === "/search") {
       const q = (url.searchParams.get("q") || "").toLowerCase().trim();
       let matches = [];
       if (q.length >= 2) {
-        const seen = new Set();
+        const tokens = q.split(/\s+/).filter(Boolean);
         for (const t of loopHandle.pool) {
           const hay = `${t.artist} ${t.title}`.toLowerCase();
-          if (!hay.includes(q)) continue;
-          if (seen.has(t.id)) continue;
-          seen.add(t.id);
-          // rank: prefix hits first
-          const starts = t.title.toLowerCase().startsWith(q) || t.artist.toLowerCase().startsWith(q);
+          if (!tokens.every((tok) => hay.includes(tok))) continue; // all words present, any order
+          // rank: exact phrase > title/artist prefix > all-words-anywhere
+          let rank = 2;
+          if (hay.includes(q)) rank = 1;
+          if (t.title.toLowerCase().startsWith(q) || t.artist.toLowerCase().startsWith(q)) rank = 0;
           matches.push({
             id: t.id, title: t.title, artist: t.artist,
             camelot: t.key?.camelot ?? null, bpm: t.bpm ? Math.round(t.bpm) : null,
-            _rank: starts ? 0 : 1,
+            _rank: rank,
           });
-          if (matches.length > 60) break; // cap scan cost
+          if (matches.length > 400) break; // scan cap (keeps it fast on 70k)
         }
         matches.sort((a, b) => a._rank - b._rank);
-        matches = matches.slice(0, 8).map(({ _rank, ...m }) => m);
+        matches = matches.slice(0, 30).map(({ _rank, ...m }) => m);
       }
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ matches }));

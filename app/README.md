@@ -42,12 +42,22 @@ curl -X POST http://localhost:4177/crate -d '{"ids":["..."],"name":"My Picks"}' 
 - **Active Deck 1 / Deck 2 split** — a two-column layout (reads Serato's per-deck state from the
   history, adat field 31). **Both decks produce results at the same time** — each column shows its
   loaded track plus its own *Recommendations from your library* and *Recommendations from Spotify*.
-  Every deck's energy is analysed live.
+  Every deck's energy is analysed live. Each row carries its source icon (snowflake = your library,
+  Spotify logo = streaming).
+- **Responsive** — wide window = two columns side by side; narrow window = **Deck 1 / Deck 2 tabs**
+  with a single column (like the compact Banger Button view).
+- **Charts tab** — pulls Spotify's Top 50 / Viral playlists once connected; owned tracks are
+  draggable to a deck. (Crate Hackers' own charts live in its private Electron DB and aren't
+  externally readable, so Spotify charts are the source.)
+- **Extensive search** — token-based across your **whole** library: every word must appear
+  somewhere (any order), so it surfaces anything related, not just exact phrases (up to 30 hits).
 - **Per-deck Filter** (button in each deck header) — a popover with:
   - **BPM range**: Min/Max inputs + ±3 / ±5 / ±10 BPM quick buttons (half/double-time aware)
   - **Compatible keys** grouped and colour-coded from that deck's key: Perfect Match · Energy Boost
     · Energy Drop · Mood Change — click keys to restrict results to them
-  - **Mix**: Any · Clean · Dirty. A count badge shows active filters; each deck filters independently.
+  - **Mix**: Any · Clean · Dirty — **strict**: only tracks explicitly labelled clean/dirty are
+    kept; anything not clearly labelled is excluded while the filter is on.
+  - A count badge shows active filters; each deck filters independently.
 - **Settings** (gear, top-right) — connect **Spotify** (your app's Client ID/Secret, saved locally
   to `.config.json`), plus placeholders for other syncs (Apple Music / Tidal / Beatport / folders).
 - **Color-coded Camelot keys** — every key badge is tinted by its key identity (the wheel).
