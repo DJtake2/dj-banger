@@ -21,7 +21,8 @@ export interface CacheEntry extends AudioFeatures {
 }
 
 const PROJECT_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const CACHE_PATH = join(PROJECT_ROOT, ".cache", "energy.json");
+// BANGER_CACHE lets the packaged app point at the user's existing analysis cache.
+const CACHE_PATH = process.env.BANGER_CACHE || join(PROJECT_ROOT, ".cache", "energy.json");
 
 export class EnergyStore {
   private map = new Map<string, CacheEntry>();

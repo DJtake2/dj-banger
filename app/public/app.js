@@ -6,6 +6,9 @@
    ============================================================================ */
 
 const IS_TAURI = typeof window.__TAURI__ !== "undefined";
+// In the packaged app the window is served from tauri://localhost, so API calls need the
+// sidecar's absolute origin. In the browser (and `tauri dev`) same-origin relative works.
+const API = IS_TAURI ? "http://localhost:4177" : "";
 const el = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
@@ -302,7 +305,7 @@ function wireFilterPop() {
 document.addEventListener("click", () => { if (openFilterDeck != null) { openFilterDeck = null; render(); } });
 
 function post(path, body) {
-  return fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).catch(() => {});
+  return fetch(API + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).catch(() => {});
 }
 
 // ---- crate export ----------------------------------------------------------
@@ -317,7 +320,7 @@ el("selExport").addEventListener("click", async () => {
   const btn = el("selExport");
   btn.textContent = "Exporting…"; btn.disabled = true;
   try {
-    const r = await fetch("/crate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ids, name: "Banger Picks" }) });
+    const r = await fetch(API + "/crate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ids, name: "Banger Picks" }) });
     const j = await r.json();
     btn.textContent = j.ok ? `✓ ${j.count} → crate` : "Failed";
     if (j.ok) { selected.clear(); for (const row of el("decksWrap").querySelectorAll(".drow.sel")) row.classList.remove("sel"); }
@@ -349,7 +352,7 @@ async function loadCharts() {
   const scroll = el("chartsScroll");
   scroll.innerHTML = `<div class="empty"><div class="big">Loading charts…</div></div>`;
   try {
-    const d = await (await fetch("/charts")).json();
+    const d = await (await fetch(API + "/charts")).json();
     if (!d.connected) {
       scroll.innerHTML = `<div class="empty"><div class="big">Connect Spotify to see charts</div>
         <div>Open Settings (gear, top-right) and add your Spotify credentials.<br>Charts pull Spotify's Top 50 &amp; Viral playlists — owned tracks are draggable to a deck.</div></div>`;
@@ -383,7 +386,7 @@ el("spTest").addEventListener("click", async () => {
   btn.textContent = "Testing…"; btn.disabled = true;
   out.hidden = true; out.className = "sp-result";
   try {
-    const r = await fetch("/spotify/test", {
+    const r = await fetch(API + "/spotify/test", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ clientId: el("spClientId").value, clientSecret: el("spClientSecret").value }),
     });
@@ -400,7 +403,7 @@ el("spSave").addEventListener("click", async () => {
   const btn = el("spSave");
   btn.textContent = "Saving…"; btn.disabled = true;
   try {
-    const r = await fetch("/settings", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ spotify: { clientId: el("spClientId").value, clientSecret: el("spClientSecret").value } }) });
+    const r = await fetch(API + "/settings", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ spotify: { clientId: el("spClientId").value, clientSecret: el("spClientSecret").value } }) });
     const j = await r.json();
     const ok = j.ok && j.streaming?.connected;
     btn.textContent = ok ? "✓ Connected" : "Saved";
@@ -429,7 +432,7 @@ function renderDropdown() {
 }
 async function runSearch(q) {
   if (q.trim().length < 2) { hideDropdown(); matches = []; return; }
-  try { matches = (await (await fetch("/search?q=" + encodeURIComponent(q))).json()).matches || []; activeIdx = -1; renderDropdown(); }
+  try { matches = (await (await fetch(API + "/search?q=" + encodeURIComponent(q))).json()).matches || []; activeIdx = -1; renderDropdown(); }
   catch { hideDropdown(); }
 }
 function pickMatch(i) {
@@ -452,7 +455,7 @@ clearBtn.addEventListener("click", () => { searchInput.value = ""; clearBtn.hidd
 // ---- connection ------------------------------------------------------------
 function setConnected(on, text) { el("statusDot").classList.toggle("off", !on); el("statusText").textContent = text; }
 function connect() {
-  const es = new EventSource("/events");
+  const es = new EventSource(API + "/events");
   es.onopen = () => setConnected(true, "watching Serato");
   es.onerror = () => setConnected(false, "reconnecting…");
   es.addEventListener("state", (ev) => {

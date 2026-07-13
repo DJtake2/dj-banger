@@ -5,6 +5,7 @@
   "identifier": "com.djtake2.banger",
   "build": {
     "beforeDevCommand": "npm run bridge",
+    "beforeBuildCommand": "bash stage-sidecar.sh",
     "devUrl": "http://localhost:4177",
     "frontendDist": "../public"
   },
@@ -35,6 +36,7 @@
   "bundle": {
     "active": true,
     "targets": ["app", "dmg"],
+    "resources": ["sidecar/**/*"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

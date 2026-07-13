@@ -26,7 +26,7 @@ import { writeSuggestionsCrate } from "../src/serato/crateWriter.ts";
 import { streamingRecommend, streamingStatus, setSpotifyCreds, spotifyCharts, testSpotifyCreds } from "../src/streaming/spotify.ts";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
-const PUBLIC = join(__dir, "public");
+const PUBLIC = process.env.BANGER_PUBLIC || join(__dir, "public");
 const PORT = Number(process.env.PORT || 4177);
 
 const MIME = { ".html": "text/html", ".css": "text/css", ".js": "text/javascript", ".svg": "image/svg+xml" };
@@ -94,7 +94,7 @@ function passesDeckFilter(t, seed, f) {
 }
 
 // ---- local settings (Spotify creds + future syncs), persisted outside git ----
-const CONFIG_PATH = join(__dirname_root(), ".config.json");
+const CONFIG_PATH = process.env.BANGER_CONFIG || join(__dirname_root(), ".config.json");
 function __dirname_root() {
   return join(dirname(fileURLToPath(import.meta.url)), "..");
 }
@@ -280,6 +280,13 @@ async function main() {
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, `http://localhost:${PORT}`);
+
+    // CORS: the packaged app's window is served from tauri://localhost and talks to this
+    // sidecar cross-origin, so allow it (and answer preflight requests).
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Headers", "content-type");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    if (req.method === "OPTIONS") { res.writeHead(204).end(); return; }
 
     if (url.pathname === "/events") {
       res.writeHead(200, {

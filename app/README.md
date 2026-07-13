@@ -86,6 +86,23 @@ npm run build      # produces a .app / .dmg
 
 `tauri dev` launches `bridge.mjs` automatically and points the window at it.
 
+## Build a standalone .dmg (self-contained app)
+
+```bash
+cd ~/dj-banger/app
+npm install          # once
+npm run tauri build  # → src-tauri/target/release/bundle/dmg/*.dmg
+```
+
+The packaged app is **self-contained** — it bundles the Node engine as a **sidecar** (a copy of
+`node` + the bridge + `src/`), staged by `stage-sidecar.sh` and launched by the Rust shell on
+startup. The window loads the bundled UI and talks to the sidecar over `http://localhost:4177`
+(CORS-enabled). It reuses your existing analysis at `~/dj-banger/.cache/energy.json`, so all the
+energy work carries over.
+
+First launch: because the app is unsigned, macOS Gatekeeper will warn — **right-click the app →
+Open** (once), or run `xattr -cr /Applications/Banger.app`.
+
 ### Drag-into-Serato
 
 Uses `tauri-plugin-drag`: on `dragstart`, the frontend calls `window.__TAURI__.drag.startDrag`
