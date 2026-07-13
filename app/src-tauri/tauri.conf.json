@@ -33,9 +33,18 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEMzOTNBOEMyRjdCOTA1QzgKUldUSUJibjN3cWlUdzdHRWQyRFRSazRBZ056V2xod1ZlWGJTdFVlMDh3Rzh1UlBpK3VaSmpUZWoK",
+      "endpoints": [
+        "https://github.com/DJtake2/dj-banger/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["app", "dmg"],
+    "createUpdaterArtifacts": true,
     "resources": ["sidecar/**/*"],
     "icon": [
       "icons/32x32.png",

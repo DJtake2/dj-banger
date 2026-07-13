@@ -16,3 +16,7 @@ dist/
 app/src-tauri/target/
 app/src-tauri/gen/
 app/src-tauri/sidecar/
+
+# updater signing key lives in \$HOME, never here — belt & suspenders
+*.key
+*.key.pub

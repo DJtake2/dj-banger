@@ -414,6 +414,29 @@ el("spSave").addEventListener("click", async () => {
   setTimeout(() => { btn.textContent = "Save & Connect"; btn.disabled = false; }, 1600);
 });
 
+// ---- self-update (installed app only) --------------------------------------
+async function checkForUpdate(manual) {
+  const out = el("updateResult");
+  const show = (msg, cls) => { out.hidden = false; out.className = "sp-result" + (cls ? " " + cls : ""); out.textContent = msg; };
+  if (!IS_TAURI) { if (manual) show("Updates apply to the installed app.", ""); return; }
+  const updater = window.__TAURI__?.updater;
+  if (!updater?.check) { if (manual) show("Updater unavailable in this build.", "bad"); return; }
+  try {
+    if (manual) show("Checking…", "");
+    const update = await updater.check();
+    if (!update || update.available === false) { if (manual) show("✓ You're on the latest version.", "ok"); return; }
+    el("settingsBtn").classList.add("has-update");
+    show(`Downloading v${update.version}…`, "");
+    await update.downloadAndInstall();
+    show("✓ Updated — quit & reopen Banger to apply.", "ok");
+  } catch (e) { if (manual) show("Update check failed: " + (e?.message || e), "bad"); }
+}
+el("updateBtn").addEventListener("click", () => checkForUpdate(true));
+(async () => {
+  try { const v = await window.__TAURI__?.app?.getVersion?.(); if (v) el("appVersion").textContent = "v" + v; } catch {}
+  if (IS_TAURI) checkForUpdate(false); // silent auto-check on launch
+})();
+
 // ---- prep search -----------------------------------------------------------
 const searchInput = el("searchInput");
 const dropdown = el("dropdown");
