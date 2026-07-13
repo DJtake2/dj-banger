@@ -34,16 +34,13 @@ const MIME = { ".html": "text/html", ".css": "text/css", ".js": "text/javascript
 // Shared, mutable engine config the loop reads on each evaluate().
 const engineConfig = { limit: 10, energyDirection: "flat" };
 
-// Filter state, applied to candidates (relative to the seed) before ranking.
-const filterState = {
-  energy: "any",   // any | chill | mid | hot
-  genre: "any",
-  bpm: "any",      // any | 3 | 5 | range
-  bpmMin: null,
-  bpmMax: null,
-  clean: "any",    // any | clean | dirty
-  key: "any",      // any | match | compatible | boost
-};
+// PER-DECK filter state. Each Serato deck has its own BPM range + clean/dirty + key selection.
+const DEFAULT_DECK_FILTER = () => ({ bpm: "any", bpmMin: null, bpmMax: null, clean: "any", keys: [] });
+const deckFilters = {}; // deck -> filter
+function filterFor(deck) {
+  if (!deckFilters[deck]) deckFilters[deck] = DEFAULT_DECK_FILTER();
+  return deckFilters[deck];
+}
 
 // Effective BPM offset honouring half/double time (mirrors the display logic).
 function effectiveBpmDelta(seedBpm, candBpm) {
@@ -52,37 +49,45 @@ function effectiveBpmDelta(seedBpm, candBpm) {
   return Math.min(...variants.map((v) => Math.abs(v - seedBpm)));
 }
 
-function passesFilter(t, seed) {
-  // Energy (absolute band)
-  if (filterState.energy !== "any") {
-    const e = t.energy ?? 5;
-    if (filterState.energy === "chill" && e > 4) return false;
-    if (filterState.energy === "mid" && (e < 5 || e > 6)) return false;
-    if (filterState.energy === "hot" && e < 7) return false;
-  }
-  // Genre (absolute)
-  if (filterState.genre !== "any") {
-    if (!t.genre || !t.genre.toLowerCase().includes(filterState.genre.toLowerCase())) return false;
-  }
-  // Clean / dirty — "clean" avoids explicit content; "dirty" avoids the clean edit.
-  if (filterState.clean === "clean" && /\b(dirty|explicit)\b/i.test(t.title)) return false;
-  if (filterState.clean === "dirty" && /\bclean\b/i.test(t.title)) return false;
-  // BPM — ±3 / ±5 relative to the seed (with half/double), or an absolute range.
-  if (filterState.bpm === "3" || filterState.bpm === "5") {
+/** Compatible-key groups for a seed key, as Camelot codes (for the filter breakdown). */
+function compatibleKeys(key) {
+  if (!key) return null;
+  const n = key.camelotNumber, L = key.camelotLetter, other = L === "A" ? "B" : "A";
+  const wrap = (x) => ((x - 1 + 12) % 12) + 1;
+  const cam = (num, let_) => `${num}${let_}`;
+  return {
+    perfect: [cam(n, L), cam(n, other)],                 // same key + relative major/minor
+    boost: [cam(wrap(n + 1), L), cam(wrap(n + 2), L)],   // +1, +2 (raise energy)
+    drop: [cam(wrap(n - 1), L), cam(wrap(n - 2), L)],    // -1, -2 (lower energy)
+    mood: [cam(wrap(n + 1), other), cam(wrap(n - 1), other)], // diagonals (mood change)
+  };
+}
+
+/** Signed shortest Camelot-number shift from seed→candidate, for the "+N" pill. */
+function keyShift(seedKey, candKey) {
+  if (!seedKey || !candKey) return null;
+  let d = ((candKey.camelotNumber - seedKey.camelotNumber) % 12 + 12) % 12;
+  if (d > 6) d -= 12;
+  return d;
+}
+
+/** Does a candidate pass a deck's filter (relative to that deck's seed)? */
+function passesDeckFilter(t, seed, f) {
+  // Clean / dirty
+  if (f.clean === "clean" && /\b(dirty|explicit)\b/i.test(t.title)) return false;
+  if (f.clean === "dirty" && /\bclean\b/i.test(t.title)) return false;
+  // BPM
+  if (f.bpm === "3" || f.bpm === "5" || f.bpm === "10") {
     const d = effectiveBpmDelta(seed?.bpm, t.bpm);
-    if (d == null || d > Number(filterState.bpm) + 0.5) return false;
-  } else if (filterState.bpm === "range") {
+    if (d == null || d > Number(f.bpm) + 0.5) return false;
+  } else if (f.bpm === "range") {
     if (t.bpm == null) return false;
-    if (filterState.bpmMin != null && t.bpm < filterState.bpmMin) return false;
-    if (filterState.bpmMax != null && t.bpm > filterState.bpmMax) return false;
+    if (f.bpmMin != null && t.bpm < f.bpmMin) return false;
+    if (f.bpmMax != null && t.bpm > f.bpmMax) return false;
   }
-  // Key relationship to the seed.
-  if (filterState.key !== "any") {
-    const compat = keyCompatibility(seed?.key, t.key);
-    if (!seed?.key || !t.key) return false; // can't judge → exclude when a key filter is on
-    if (filterState.key === "match" && t.key.camelot !== seed.key.camelot) return false;
-    if (filterState.key === "compatible" && compat < 0.85) return false;
-    if (filterState.key === "boost" && !(compat >= 0.68 && compat < 0.85)) return false;
+  // Compatible keys — when specific keys are selected, restrict to them.
+  if (f.keys && f.keys.length) {
+    if (!t.key || !f.keys.includes(t.key.camelot)) return false;
   }
   return true;
 }
@@ -156,7 +161,6 @@ function bpmRelation(seedBpm, candBpm) {
 /** Map an engine Suggestion to the compact shape the UI wants. */
 function toWire(s, seed) {
   const k = s.breakdown.key;
-  // If either track has no key we can't judge harmony → "unknown" (neutral), not a clash.
   const keyKnown = !!(seed?.key && s.track.key);
   const band = !keyKnown
     ? "unknown"
@@ -171,6 +175,7 @@ function toWire(s, seed) {
     bpm: s.track.bpm ?? null,
     bpmDelta: rel.delta,
     bpmMult: rel.mult,
+    keyShift: keyShift(seed?.key, s.track.key),
     energy: s.track.energy ?? null,
     energyReal: s.track.raw?.energySource === "audio",
     score: s.score,
@@ -179,7 +184,7 @@ function toWire(s, seed) {
   };
 }
 
-/** Compact "track head" shape for now-playing / deck display. */
+/** Compact "track head" shape for a deck's now-playing display. */
 function seedInfo(seed) {
   return {
     id: seed.id,
@@ -192,73 +197,50 @@ function seedInfo(seed) {
   };
 }
 
-/**
- * Build a suggestions payload.
- * @param opts.decks     [{deck, seed}] deck states (live only)
- * @param opts.activeDeck the deck suggestions are for
- */
-function buildPayload(seed, suggestions, computeMs, source = "live", opts = {}) {
+let deckSeeds = {}; // deck number -> current seed Track (for streaming + filter re-rank)
+
+/** Compute one deck's library suggestions + its compatible-key breakdown + filter. */
+function rankDeck(deck, seed) {
+  const f = filterFor(deck);
+  const t0 = performance.now();
+  const cands = loopHandle.pool.filter((tt) => passesDeckFilter(tt, seed, f));
+  const suggestions = recommend({ seed }, cands, engineConfig);
   return {
-    source, // "live" (Serato now-playing) | "prep" (manual seed)
-    computeMs,
+    deck,
     nowPlaying: seedInfo(seed),
-    activeDeck: opts.activeDeck ?? null,
-    decks: (opts.decks || []).map((d) => ({ deck: d.deck, ...seedInfo(d.seed || d.nowPlaying) })),
-    list: suggestions.map((s) => toWire(s, seed)),
+    library: suggestions.map((s) => toWire(s, seed)),
+    compat: compatibleKeys(seed.key),
+    filter: f,
+    computeMs: performance.now() - t0,
   };
 }
 
-let currentSeed = null; // last seed (live or prep), for streaming lookups
-let deckSeeds = {};     // deck number -> current seed Track (for /deck focus)
-let lastActiveDeck = null;
-let focusedDeck = null; // user-selected deck (overrides live active until a real change)
-
-/** Rank + broadcast suggestions for a specific deck's track. */
-function broadcastDeckRank(deck) {
-  const seed = deckSeeds[deck];
-  if (!seed) return false;
-  currentSeed = seed;
-  const t0 = performance.now();
-  const cands = loopHandle.pool.filter((tt) => passesFilter(tt, seed));
-  const suggestions = recommend({ seed }, cands, engineConfig);
-  lastPayload = buildPayload(seed, suggestions, performance.now() - t0, "live", {
-    decks: Object.entries(deckSeeds).map(([d, s]) => ({ deck: Number(d), seed: s })),
-    activeDeck: deck,
-  });
-  broadcast("suggestions", lastPayload);
-  void emitStreaming(seed);
-  return true;
+/** Build + broadcast the full dual-deck payload from the current deck seeds. */
+function broadcastDecks(source = "live") {
+  if (!loopHandle) return []; // library not ready yet (initial startup event)
+  const decks = Object.entries(deckSeeds)
+    .map(([d, seed]) => rankDeck(Number(d), seed))
+    .sort((a, b) => a.deck - b.deck);
+  lastPayload = { source, decks };
+  broadcast("decks", lastPayload);
+  return decks;
 }
 
-/** Re-rank after a config/filter change: keep the focused deck if one is selected. */
-async function reRank() {
-  if (focusedDeck != null && broadcastDeckRank(focusedDeck)) return;
-  await loopHandle.rerun();
-}
-
-/** Fire off a streaming (Spotify) lookup for a seed and broadcast when it returns. */
-async function emitStreaming(seed) {
+/** Per-deck streaming (Spotify) lookup → broadcast tagged with the deck. */
+async function emitStreamingForDeck(deck, seed) {
   if (!seed) return;
   try {
     const tracks = await streamingRecommend(seed, loopHandle.pool);
-    // only broadcast if this is still the current seed (avoid stale results)
-    if (currentSeed && currentSeed.id === seed.id) {
-      broadcast("streaming", { seedId: seed.id, ...streamingStatus(), tracks });
+    if (deckSeeds[deck] && deckSeeds[deck].id === seed.id) {
+      broadcast("streaming", { deck, seedId: seed.id, ...streamingStatus(), tracks });
     }
   } catch (e) {
-    broadcast("streaming", { seedId: seed.id, connected: false, error: String(e.message || e), tracks: [] });
+    broadcast("streaming", { deck, seedId: seed.id, connected: false, error: String(e.message || e), tracks: [] });
   }
 }
-
-/** Top genres in the library, for the filter dropdown. */
-function topGenres(pool, n = 14) {
-  const counts = new Map();
-  for (const t of pool) {
-    if (!t.genre) continue;
-    const g = t.genre.trim();
-    if (g) counts.set(g, (counts.get(g) ?? 0) + 1);
-  }
-  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(([g]) => g);
+function emitAllStreaming() {
+  if (!loopHandle) return;
+  for (const [d, seed] of Object.entries(deckSeeds)) void emitStreamingForDeck(Number(d), seed);
 }
 
 async function main() {
@@ -266,27 +248,19 @@ async function main() {
   console.log("Starting engine…");
   loopHandle = await startLiveLoop({
     config: engineConfig,
-    writeCrate: false, // the floating window is the UI; crate write is opt-in elsewhere
-    candidateFilter: passesFilter,
+    writeCrate: false,
     log: (m) => console.log("·", m),
     onEvent: (e) => {
-      const seed = e.seed ?? {
-        id: e.nowPlaying.id, title: e.nowPlaying.title, artist: e.nowPlaying.artist,
-      };
-      currentSeed = seed;
-      lastActiveDeck = e.activeDeck;
-      focusedDeck = null; // a real Serato change supersedes any manual deck focus
       deckSeeds = {};
       for (const d of e.decks || []) if (d.seed) deckSeeds[d.deck] = d.seed;
-      lastPayload = buildPayload(seed, e.suggestions, e.computeMs, "live", {
-        decks: e.decks, activeDeck: e.activeDeck,
-      });
-      broadcast("suggestions", lastPayload);
-      void emitStreaming(seed);
+      if (!Object.keys(deckSeeds).length && e.seed) deckSeeds[e.activeDeck || 1] = e.seed;
+      broadcastDecks("live");
+      emitAllStreaming();
     },
   });
   console.log(`Engine ready: ${loopHandle.librarySize} tracks.`);
-  const genres = topGenres(loopHandle.pool);
+  await loopHandle.rerun(); // emit the first decks payload now that loopHandle is set
+  emitAllStreaming();
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, `http://localhost:${PORT}`);
@@ -300,36 +274,16 @@ async function main() {
       clients.add(res);
       sse(res, "state", {
         librarySize: loopHandle.librarySize,
-        genres,
-        filter: filterState,
         energyDirection: engineConfig.energyDirection,
         streaming: streamingStatus(),
         settings: { spotify: { clientId: appConfig.spotify.clientId || "", hasSecret: !!appConfig.spotify.clientSecret } },
       });
-      if (lastPayload) sse(res, "suggestions", lastPayload);
+      if (lastPayload) sse(res, "decks", lastPayload);
       req.on("close", () => clients.delete(res));
       return;
     }
 
-    // Focus a specific deck → re-rank suggestions against that deck's track.
-    if (url.pathname === "/deck" && req.method === "POST") {
-      let body = "";
-      req.on("data", (c) => (body += c));
-      req.on("end", async () => {
-        try {
-          const { deck } = JSON.parse(body || "{}");
-          if (!deckSeeds[deck]) return res.writeHead(404).end('{"ok":false}');
-          focusedDeck = Number(deck);
-          broadcastDeckRank(focusedDeck);
-          res.writeHead(200).end('{"ok":true}');
-        } catch {
-          res.writeHead(400).end('{"ok":false}');
-        }
-      });
-      return;
-    }
-
-    // Save settings (Spotify credentials) → persist + apply live.
+    // Save settings (Spotify credentials) → persist + apply + refresh streaming.
     if (url.pathname === "/settings" && req.method === "POST") {
       let body = "";
       req.on("data", (c) => (body += c));
@@ -342,7 +296,7 @@ async function main() {
           }
           await saveConfig();
           applyConfig();
-          if (currentSeed) void emitStreaming(currentSeed);
+          emitAllStreaming();
           res.writeHead(200).end(JSON.stringify({ ok: true, streaming: streamingStatus() }));
         } catch (e) {
           res.writeHead(400).end(JSON.stringify({ ok: false, error: String(e.message || e) }));
@@ -351,20 +305,21 @@ async function main() {
       return;
     }
 
-    // Filter change → re-rank the current seed.
-    if (url.pathname === "/filter" && req.method === "POST") {
+    // Per-deck filter change → re-rank that deck (and refresh the whole payload).
+    if (url.pathname === "/deckfilter" && req.method === "POST") {
       let body = "";
       req.on("data", (c) => (body += c));
       req.on("end", async () => {
         try {
-          const f = JSON.parse(body || "{}");
-          for (const key of ["energy", "genre", "bpm", "clean", "key"]) {
-            if (typeof f[key] === "string") filterState[key] = f[key];
-          }
-          if ("bpmMin" in f) filterState.bpmMin = f.bpmMin === null || f.bpmMin === "" ? null : Number(f.bpmMin);
-          if ("bpmMax" in f) filterState.bpmMax = f.bpmMax === null || f.bpmMax === "" ? null : Number(f.bpmMax);
-          await reRank();
-          res.writeHead(200).end(JSON.stringify({ ok: true, filter: filterState }));
+          const p = JSON.parse(body || "{}");
+          const f = filterFor(p.deck);
+          if (typeof p.bpm === "string") f.bpm = p.bpm;
+          if (typeof p.clean === "string") f.clean = p.clean;
+          if ("bpmMin" in p) f.bpmMin = p.bpmMin === null || p.bpmMin === "" ? null : Number(p.bpmMin);
+          if ("bpmMax" in p) f.bpmMax = p.bpmMax === null || p.bpmMax === "" ? null : Number(p.bpmMax);
+          if (Array.isArray(p.keys)) f.keys = p.keys;
+          broadcastDecks("live");
+          res.writeHead(200).end(JSON.stringify({ ok: true, filter: f }));
         } catch {
           res.writeHead(400).end('{"ok":false}');
         }
@@ -399,7 +354,7 @@ async function main() {
           const { energyDirection } = JSON.parse(body || "{}");
           if (["flat", "build", "cool"].includes(energyDirection)) {
             engineConfig.energyDirection = energyDirection;
-            await reRank(); // recompute (keeps the focused deck if one is selected)
+            broadcastDecks("live"); // re-rank both decks with the new trajectory
           }
           res.writeHead(200).end('{"ok":true}');
         } catch {
@@ -437,24 +392,21 @@ async function main() {
       return;
     }
 
-    // Manual seed / prep mode: rank against a library track by exact id or substring query.
+    // Manual seed / prep mode: load a track onto a deck slot (default: a "prep" deck 0).
     if (url.pathname === "/seed" && req.method === "POST") {
       let body = "";
       req.on("data", (c) => (body += c));
       req.on("end", async () => {
         try {
-          const { id, query } = JSON.parse(body || "{}");
+          const { id, query, deck } = JSON.parse(body || "{}");
           const seed = id
             ? loopHandle.pool.find((t) => t.id === id)
             : loopHandle.pool.find((t) => `${t.artist} ${t.title}`.toLowerCase().includes(String(query || "").toLowerCase()));
           if (!seed) return res.writeHead(404).end('{"ok":false}');
-          currentSeed = seed;
-          const t0 = performance.now();
-          const cands = loopHandle.pool.filter((tt) => passesFilter(tt, seed));
-          const suggestions = recommend({ seed }, cands, engineConfig);
-          lastPayload = buildPayload(seed, suggestions, performance.now() - t0, "prep");
-          broadcast("suggestions", lastPayload);
-          void emitStreaming(seed);
+          const target = deck ?? 0; // deck 0 = prep slot
+          deckSeeds[target] = seed;
+          broadcastDecks(target === 0 ? "prep" : "live");
+          void emitStreamingForDeck(target, seed);
           res.writeHead(200).end('{"ok":true}');
         } catch {
           res.writeHead(400).end('{"ok":false}');
@@ -463,9 +415,9 @@ async function main() {
       return;
     }
 
-    // Return to live now-playing (leave prep mode / deck focus).
+    // Return to live decks (drop any prep slot).
     if (url.pathname === "/live" && req.method === "POST") {
-      focusedDeck = null;
+      delete deckSeeds[0];
       await loopHandle.rerun();
       res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}');
       return;

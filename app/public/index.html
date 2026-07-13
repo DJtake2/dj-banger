@@ -41,93 +41,12 @@
       <div class="dropdown" id="dropdown" hidden></div>
     </div>
 
-    <!-- Deck split (live) — one card per Serato deck; tap to get suggestions for it -->
-    <div class="decks" id="decks" hidden></div>
-
-    <!-- Now playing / prep (single-seed view) -->
-    <div class="now" id="now" hidden>
-      <div class="eyebrow" id="npEyebrow">
-        <span class="onair" id="npDot"></span> <span id="npLabel">NOW PLAYING</span>
-        <button id="backLive" class="livebtn" hidden>● BACK TO LIVE</button>
-      </div>
-      <div class="title" id="npTitle">—</div>
-      <div class="artist" id="npArtist"></div>
-      <div class="stats" id="npStats"></div>
-    </div>
-
-    <!-- Collapsible filter panel -->
-    <div class="filterpanel" id="filterPanel" hidden>
-      <div class="frow">
-        <span class="flabel">KEY</span>
-        <div class="fseg" id="keyFilter">
-          <button data-v="any" class="on">Any</button>
-          <button data-v="match">Match</button>
-          <button data-v="compatible">Compatible</button>
-          <button data-v="boost">Boost</button>
-        </div>
-      </div>
-      <div class="frow">
-        <span class="flabel">BPM</span>
-        <div class="fseg" id="bpmFilter">
-          <button data-v="any" class="on">Any</button>
-          <button data-v="3">±3</button>
-          <button data-v="5">±5</button>
-          <button data-v="range">Range</button>
-        </div>
-        <span class="frange" id="bpmRange" hidden>
-          <input id="bpmMin" type="number" inputmode="numeric" placeholder="min" />
-          <span>–</span>
-          <input id="bpmMax" type="number" inputmode="numeric" placeholder="max" />
-        </span>
-      </div>
-      <div class="frow">
-        <span class="flabel">EN</span>
-        <div class="fseg" id="energyFilter">
-          <button data-v="any" class="on">All</button>
-          <button data-v="chill">Chill</button>
-          <button data-v="mid">Mid</button>
-          <button data-v="hot">Hot</button>
-        </div>
-      </div>
-      <div class="frow">
-        <span class="flabel">MIX</span>
-        <div class="fseg" id="cleanFilter">
-          <button data-v="any" class="on">Any</button>
-          <button data-v="clean">Clean</button>
-          <button data-v="dirty">Dirty</button>
-        </div>
-        <select id="genreFilter" class="fsel" aria-label="Genre filter">
-          <option value="any">All genres</option>
-        </select>
-      </div>
-    </div>
-
-    <!-- Scrollable content: library suggestions + streaming -->
-    <div class="scroll" id="scroll">
-      <div class="section-head" id="nextHead" hidden>
-        <h2>NEXT UP</h2>
-        <button class="funnel" id="filterToggle" aria-label="Filters" title="Filters">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18l-7 8v5l-4 2v-7L3 5z" stroke-linejoin="round"/></svg>
-          <span class="fcount" id="filterCount" hidden>0</span>
-        </button>
-        <span class="meta" id="nextMeta"></span>
-      </div>
-
-      <div class="list" id="list">
-        <div class="empty" id="empty">
-          <div class="spinner"></div>
-          <div class="big">Waiting for Serato…</div>
-          <div>Play a track and suggestions appear here.</div>
-        </div>
-      </div>
-
-      <!-- Streaming (Spotify) recommendations -->
-      <div class="stream" id="stream" hidden>
-        <div class="section-head">
-          <h2><span class="sp-dot"></span> FROM SPOTIFY</h2>
-          <span class="meta" id="streamMeta"></span>
-        </div>
-        <div class="list streamlist" id="streamList"></div>
+    <!-- Two-column deck split — each deck shows its own library + Spotify recs at once -->
+    <div class="decks-wrap" id="decksWrap">
+      <div class="empty" id="empty">
+        <div class="spinner"></div>
+        <div class="big">Waiting for Serato…</div>
+        <div>Play a track on a deck and suggestions appear here.</div>
       </div>
     </div>
 
