@@ -28,6 +28,8 @@ export interface NowPlaying {
   artist?: string;
   album?: string;
   genre?: string;
+  /** Serato deck this was played on (adat field 31): 1, 2, 3, 4. */
+  deck?: number;
   /** Which session file + entry index it came from. */
   sessionFile: string;
   entryIndex: number;
@@ -59,6 +61,12 @@ function fieldStr(m: Map<number, Buffer>, id: number): string | undefined {
   if (!b) return undefined;
   const s = utf16be.decode(b).replace(/\0+$/, "");
   return s.length ? s : undefined;
+}
+
+function fieldInt(m: Map<number, Buffer>, id: number): number | undefined {
+  const b = m.get(id);
+  if (!b || b.length === 0) return undefined;
+  return b.length >= 4 ? b.readUInt32BE(0) : b.readUIntBE(0, b.length);
 }
 
 /** Path to the Sessions directory. */
@@ -129,6 +137,7 @@ function parseSessionEntries(buf: Buffer): NowPlaying[] {
               artist: fieldStr(fields, 7),
               album: fieldStr(fields, 8),
               genre: fieldStr(fields, 9),
+              deck: fieldInt(fields, 31),
               sessionFile: "",
               entryIndex: idx,
             });
@@ -153,4 +162,33 @@ export async function getNowPlaying(seratoDir = defaultSeratoDir()): Promise<Now
   const last = entries[entries.length - 1];
   last.sessionFile = session;
   return last;
+}
+
+export interface DeckState {
+  /** Deck -> its most-recent track. */
+  decks: Record<number, NowPlaying>;
+  /** The deck of the overall-most-recent entry (the "active"/incoming deck). */
+  activeDeck: number | null;
+  sessionFile: string | null;
+}
+
+/**
+ * Current per-deck state: the latest track on each deck (Serato logs each play with its deck
+ * in adat field 31). Entries without a deck number fall back to deck 1.
+ */
+export async function getDecks(seratoDir = defaultSeratoDir()): Promise<DeckState> {
+  const session = await newestSession(seratoDir);
+  if (!session) return { decks: {}, activeDeck: null, sessionFile: null };
+  const buf = await readFile(session);
+  const entries = parseSessionEntries(buf);
+  const decks: Record<number, NowPlaying> = {};
+  let activeDeck: number | null = null;
+  // entries are oldest→newest; last write per deck wins, last overall = active.
+  for (const e of entries) {
+    const d = e.deck && e.deck >= 1 && e.deck <= 4 ? e.deck : 1;
+    e.sessionFile = session;
+    decks[d] = e;
+    activeDeck = d;
+  }
+  return { decks, activeDeck, sessionFile: session };
 }

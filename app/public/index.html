@@ -20,6 +20,12 @@
         <span id="statusDot" class="dot off"></span>
         <span id="statusText">connecting…</span>
       </div>
+      <button class="iconbtn" id="settingsBtn" aria-label="Settings" title="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
     </div>
 
     <!-- Manual seed / prep search -->
@@ -35,7 +41,10 @@
       <div class="dropdown" id="dropdown" hidden></div>
     </div>
 
-    <!-- Now playing -->
+    <!-- Deck split (live) — one card per Serato deck; tap to get suggestions for it -->
+    <div class="decks" id="decks" hidden></div>
+
+    <!-- Now playing / prep (single-seed view) -->
     <div class="now" id="now" hidden>
       <div class="eyebrow" id="npEyebrow">
         <span class="onair" id="npDot"></span> <span id="npLabel">NOW PLAYING</span>
@@ -46,17 +55,48 @@
       <div class="stats" id="npStats"></div>
     </div>
 
-    <!-- Filters -->
-    <div class="filters" id="filters" hidden>
-      <div class="fseg" id="energyFilter" data-kind="energy">
-        <span class="flabel">EN</span>
-        <button data-v="any" class="on">All</button>
-        <button data-v="chill">Chill</button>
-        <button data-v="mid">Mid</button>
-        <button data-v="hot">Hot</button>
+    <!-- Collapsible filter panel -->
+    <div class="filterpanel" id="filterPanel" hidden>
+      <div class="frow">
+        <span class="flabel">KEY</span>
+        <div class="fseg" id="keyFilter">
+          <button data-v="any" class="on">Any</button>
+          <button data-v="match">Match</button>
+          <button data-v="compatible">Compatible</button>
+          <button data-v="boost">Boost</button>
+        </div>
       </div>
-      <div class="fgenre">
-        <select id="genreFilter" aria-label="Genre filter">
+      <div class="frow">
+        <span class="flabel">BPM</span>
+        <div class="fseg" id="bpmFilter">
+          <button data-v="any" class="on">Any</button>
+          <button data-v="3">±3</button>
+          <button data-v="5">±5</button>
+          <button data-v="range">Range</button>
+        </div>
+        <span class="frange" id="bpmRange" hidden>
+          <input id="bpmMin" type="number" inputmode="numeric" placeholder="min" />
+          <span>–</span>
+          <input id="bpmMax" type="number" inputmode="numeric" placeholder="max" />
+        </span>
+      </div>
+      <div class="frow">
+        <span class="flabel">EN</span>
+        <div class="fseg" id="energyFilter">
+          <button data-v="any" class="on">All</button>
+          <button data-v="chill">Chill</button>
+          <button data-v="mid">Mid</button>
+          <button data-v="hot">Hot</button>
+        </div>
+      </div>
+      <div class="frow">
+        <span class="flabel">MIX</span>
+        <div class="fseg" id="cleanFilter">
+          <button data-v="any" class="on">Any</button>
+          <button data-v="clean">Clean</button>
+          <button data-v="dirty">Dirty</button>
+        </div>
+        <select id="genreFilter" class="fsel" aria-label="Genre filter">
           <option value="any">All genres</option>
         </select>
       </div>
@@ -66,6 +106,10 @@
     <div class="scroll" id="scroll">
       <div class="section-head" id="nextHead" hidden>
         <h2>NEXT UP</h2>
+        <button class="funnel" id="filterToggle" aria-label="Filters" title="Filters">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18l-7 8v5l-4 2v-7L3 5z" stroke-linejoin="round"/></svg>
+          <span class="fcount" id="filterCount" hidden>0</span>
+        </button>
         <span class="meta" id="nextMeta"></span>
       </div>
 
@@ -104,6 +148,35 @@
         <button data-dir="cool">Cool</button>
         <button data-dir="flat" class="on">Flat</button>
         <button data-dir="build">Build</button>
+      </div>
+    </div>
+
+    <!-- Settings modal -->
+    <div class="modal" id="settingsModal" hidden>
+      <div class="sheet">
+        <div class="sheet-head">
+          <h3>Settings</h3>
+          <button class="iconbtn" id="settingsClose" aria-label="Close">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+        <div class="sheet-body">
+          <div class="sync">
+            <div class="sync-head"><span class="sp-dot"></span> Spotify <span class="sync-status" id="spotifyStatus">not connected</span></div>
+            <p class="hint">Free Spotify app credentials (client-credentials — no login). Surfaces tracks beyond your library and flags which you already own.</p>
+            <input id="spClientId" type="text" spellcheck="false" autocomplete="off" placeholder="Client ID" />
+            <input id="spClientSecret" type="password" spellcheck="false" autocomplete="off" placeholder="Client Secret" />
+            <button class="primary" id="spSave">Save & Connect</button>
+          </div>
+
+          <div class="sync muted">
+            <div class="sync-head">Other library syncs</div>
+            <div class="syncrow"><span>Apple Music</span><span class="soon">soon</span></div>
+            <div class="syncrow"><span>Tidal</span><span class="soon">soon</span></div>
+            <div class="syncrow"><span>Beatport / Beatsource</span><span class="soon">soon</span></div>
+            <div class="syncrow"><span>Watch folder (local files)</span><span class="soon">soon</span></div>
+          </div>
+        </div>
       </div>
     </div>
   </div>

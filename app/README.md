@@ -39,6 +39,16 @@ curl -X POST http://localhost:4177/crate -d '{"ids":["..."],"name":"My Picks"}' 
 
 ## Banger Button-style features
 
+- **Deck 1 / Deck 2 split** — reads Serato's per-deck state from the history (adat field 31) and
+  shows what's loaded on each deck (key/BPM/energy). The active deck drives suggestions; tap the
+  other deck to get suggestions for it. Both decks' energy is analysed live.
+- **Settings** (gear, top-right) — connect **Spotify** (your app's Client ID/Secret, saved locally
+  to `.config.json`), plus placeholders for other syncs (Apple Music / Tidal / Beatport / folders).
+- **Filters** (funnel, in NEXT UP) — a collapsible panel:
+  - **Key**: Any · Match (same key) · Compatible (adjacent/relative) · Boost (energy-boost keys)
+  - **BPM**: Any · ±3 · ±5 · Range (min/max) — all half/double-time aware
+  - **Energy**: All · Chill · Mid · Hot   ·   **Mix**: Any · Clean · Dirty   ·   **Genre** dropdown
+  - A badge shows how many filters are active; they survive deck focus changes.
 - **Color-coded Camelot keys** — every key badge is tinted by its key identity (the wheel).
 - **Multi-select → crate** — tick the checkbox on any suggestions, then **Export crate** writes
   them to a Serato crate (reuses the Phase 2 writer; only ever creates its own new file).

@@ -15,8 +15,16 @@
 
 import type { Track } from "../types.ts";
 
-const ID = process.env.SPOTIFY_CLIENT_ID;
-const SECRET = process.env.SPOTIFY_CLIENT_SECRET;
+// Credentials: env by default, overridable at runtime from the Settings panel.
+let ID: string | undefined = process.env.SPOTIFY_CLIENT_ID;
+let SECRET: string | undefined = process.env.SPOTIFY_CLIENT_SECRET;
+
+/** Set Spotify credentials at runtime (from saved settings). Clears the cached token. */
+export function setSpotifyCreds(id?: string, secret?: string): void {
+  ID = id || undefined;
+  SECRET = secret || undefined;
+  token = null;
+}
 
 export interface StreamingTrack {
   title: string;

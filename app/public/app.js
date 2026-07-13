@@ -114,12 +114,10 @@ function renderList(data) {
   if (!items.length) {
     empty.hidden = false;
     nextHead.hidden = true;
-    el("filters").hidden = true;
     return;
   }
   empty.hidden = true;
   nextHead.hidden = false;
-  el("filters").hidden = false;
   nextMeta.textContent = `${items.length} matches · ${Math.round(data.computeMs || 0)}ms`;
   list.innerHTML = items.map((s, i) => rowHtml(s, i, true)).join("");
   wireDrag();
@@ -173,16 +171,85 @@ el("selExport").addEventListener("click", async () => {
   setTimeout(() => { btn.textContent = "Export crate"; btn.disabled = false; refreshSelbar(); }, 1400);
 });
 
+// ---- deck split ------------------------------------------------------------
+function deckStat(info) {
+  const kb = info.camelot ? `<span class="keybadge" style="${keyBadgeStyle(info.camelot)}">${esc(info.camelot)}</span>` : "";
+  return `<div class="ds">
+    ${kb}
+    ${info.bpm ? `<span class="dbpm">${Math.round(info.bpm)}</span>` : ""}
+    <span class="de"><span class="m"><i style="width:${(info.energy || 0) * 10}%"></i></span>${info.energy ?? "?"}</span>
+  </div>`;
+}
+function deckCard(info, n, active) {
+  const on = n === active;
+  if (!info) {
+    return `<div class="deck" data-empty="1" data-deck="${n}"><div class="dh"><span class="dnum">DECK ${n}</span></div><div class="empty-slot">— empty —</div></div>`;
+  }
+  return `<div class="deck ${on ? "active" : ""}" data-deck="${n}">
+    <div class="dh"><span class="dnum">DECK ${n}</span>${on ? '<span class="live-dot"></span>' : ""}</div>
+    <div class="dt">${esc(info.title)}</div>
+    <div class="da">${esc(info.artist || "")}</div>
+    ${deckStat(info)}
+  </div>`;
+}
+function renderDecks(d) {
+  const wrap = el("decks");
+  const decks = d.decks || [];
+  if (!decks.length) { wrap.hidden = true; now.hidden = true; return; }
+  now.hidden = true;
+  wrap.hidden = false;
+  const byDeck = new Map(decks.map((x) => [x.deck, x]));
+  const nums = [...new Set([1, 2, ...decks.map((x) => x.deck)])].sort((a, b) => a - b);
+  wrap.innerHTML = nums.map((n) => deckCard(byDeck.get(n), n, d.activeDeck)).join("");
+  for (const card of wrap.querySelectorAll(".deck[data-deck]:not([data-empty])")) {
+    card.addEventListener("click", () => {
+      const deck = Number(card.dataset.deck);
+      if (deck === d.activeDeck) return;
+      fetch("/deck", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ deck }) }).catch(() => {});
+    });
+  }
+}
+
 // ---- filters ---------------------------------------------------------------
-el("energyFilter").addEventListener("click", (e) => {
-  const btn = e.target.closest("button");
-  if (!btn) return;
-  for (const b of el("energyFilter").querySelectorAll("button")) b.classList.toggle("on", b === btn);
-  fetch("/filter", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ energy: btn.dataset.v }) }).catch(() => {});
+function postFilter(patch) {
+  fetch("/filter", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(patch) }).catch(() => {});
+  updateFilterCount();
+}
+function segSet(id, value) {
+  for (const b of el(id).querySelectorAll("button")) b.classList.toggle("on", b.dataset.v === value);
+}
+function wireFseg(id, field) {
+  el(id).addEventListener("click", (e) => {
+    const btn = e.target.closest("button");
+    if (!btn) return;
+    segSet(id, btn.dataset.v);
+    if (field === "bpm") el("bpmRange").hidden = btn.dataset.v !== "range";
+    postFilter({ [field]: btn.dataset.v });
+  });
+}
+wireFseg("keyFilter", "key");
+wireFseg("bpmFilter", "bpm");
+wireFseg("energyFilter", "energy");
+wireFseg("cleanFilter", "clean");
+el("genreFilter").addEventListener("change", (e) => postFilter({ genre: e.target.value }));
+el("bpmMin").addEventListener("change", () => postFilter({ bpm: "range", bpmMin: el("bpmMin").value }));
+el("bpmMax").addEventListener("change", () => postFilter({ bpm: "range", bpmMax: el("bpmMax").value }));
+el("filterToggle").addEventListener("click", () => {
+  const p = el("filterPanel");
+  p.hidden = !p.hidden;
+  el("filterToggle").classList.toggle("on", !p.hidden);
 });
-el("genreFilter").addEventListener("change", (e) => {
-  fetch("/filter", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ genre: e.target.value }) }).catch(() => {});
-});
+function updateFilterCount() {
+  let n = 0;
+  for (const id of ["keyFilter", "bpmFilter", "energyFilter", "cleanFilter"]) {
+    const on = el(id).querySelector("button.on");
+    if (on && on.dataset.v !== "any") n++;
+  }
+  if (el("genreFilter").value && el("genreFilter").value !== "any") n++;
+  const c = el("filterCount");
+  c.textContent = String(n);
+  c.hidden = n === 0;
+}
 function populateGenres(genres) {
   const sel = el("genreFilter");
   if (sel.dataset.filled) return;
@@ -193,6 +260,49 @@ function populateGenres(genres) {
     sel.appendChild(o);
   }
 }
+function syncFilterUI(f) {
+  if (!f) return;
+  segSet("keyFilter", f.key || "any");
+  segSet("bpmFilter", f.bpm || "any");
+  segSet("energyFilter", f.energy || "any");
+  segSet("cleanFilter", f.clean || "any");
+  el("bpmRange").hidden = f.bpm !== "range";
+  if (f.bpmMin != null) el("bpmMin").value = f.bpmMin;
+  if (f.bpmMax != null) el("bpmMax").value = f.bpmMax;
+  el("genreFilter").value = f.genre && f.genre !== "any" ? f.genre : "any";
+  updateFilterCount();
+}
+
+// ---- settings modal --------------------------------------------------------
+const modal = el("settingsModal");
+el("settingsBtn").addEventListener("click", () => { modal.hidden = false; });
+el("settingsClose").addEventListener("click", () => { modal.hidden = true; });
+modal.addEventListener("click", (e) => { if (e.target === modal) modal.hidden = true; });
+function syncSettings(s) {
+  if (!s?.spotify) return;
+  if (s.spotify.clientId && !el("spClientId").value) el("spClientId").value = s.spotify.clientId;
+  const st = el("spotifyStatus");
+  const connected = !!(s.spotify.clientId && s.spotify.hasSecret);
+  st.textContent = connected ? "connected" : "not connected";
+  st.classList.toggle("on", connected);
+}
+el("spSave").addEventListener("click", async () => {
+  const btn = el("spSave");
+  btn.textContent = "Saving…"; btn.disabled = true;
+  try {
+    const r = await fetch("/settings", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ spotify: { clientId: el("spClientId").value, clientSecret: el("spClientSecret").value } }),
+    });
+    const j = await r.json();
+    const ok = j.ok && j.streaming?.connected;
+    btn.textContent = ok ? "✓ Connected" : "Saved";
+    el("spotifyStatus").textContent = ok ? "connected" : "check credentials";
+    el("spotifyStatus").classList.toggle("on", ok);
+    el("spClientSecret").value = "";
+  } catch { btn.textContent = "Failed"; }
+  setTimeout(() => { btn.textContent = "Save & Connect"; btn.disabled = false; }, 1600);
+});
 
 // ---- streaming (Spotify) ---------------------------------------------------
 function renderStreaming(d) {
@@ -201,8 +311,8 @@ function renderStreaming(d) {
   el("streamMeta").textContent = d.connected ? `${(d.tracks || []).length} picks` : "not connected";
   if (!d.connected) {
     stream.hidden = false;
-    sl.innerHTML = `<div class="connect">Connect Spotify to surface tracks beyond your library.
-      Set <code>SPOTIFY_CLIENT_ID</code> and <code>SPOTIFY_CLIENT_SECRET</code> and restart.</div>`;
+    sl.innerHTML = `<div class="connect">Connect Spotify in <b>Settings</b> (the gear, top-right)
+      to surface tracks beyond your library.</div>`;
     return;
   }
   const tracks = d.tracks || [];
@@ -276,19 +386,22 @@ function connect() {
     const d = JSON.parse(ev.data);
     setConnected(true, `${d.librarySize.toLocaleString()} tracks`);
     populateGenres(d.genres);
-    // Sync controls to the server's actual state (survives reconnects / prior changes).
-    if (d.filter) {
-      for (const b of el("energyFilter").querySelectorAll("button")) b.classList.toggle("on", b.dataset.v === (d.filter.energy || "any"));
-      el("genreFilter").value = d.filter.genre && d.filter.genre !== "any" ? d.filter.genre : "any";
-    }
+    syncFilterUI(d.filter);
     if (d.energyDirection) {
       for (const b of el("energySeg").children) b.classList.toggle("on", b.dataset.dir === d.energyDirection);
     }
+    syncSettings(d.settings);
     if (d.streaming) renderStreaming({ ...d.streaming, tracks: [] });
   });
   es.addEventListener("suggestions", (ev) => {
     const d = JSON.parse(ev.data);
-    renderNow(d.nowPlaying, d.source);
+    // Live → deck split; prep → single now-playing card.
+    if (d.source === "prep") {
+      el("decks").hidden = true;
+      renderNow(d.nowPlaying, "prep");
+    } else {
+      renderDecks(d);
+    }
     renderList(d);
   });
   es.addEventListener("streaming", (ev) => {

@@ -15,13 +15,15 @@
 
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join, dirname, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startLiveLoop } from "../src/live.ts";
 import { recommend } from "../src/engine.ts";
+import { keyCompatibility } from "../src/camelot.ts";
 import { writeSuggestionsCrate } from "../src/serato/crateWriter.ts";
-import { streamingRecommend, streamingStatus } from "../src/streaming/spotify.ts";
+import { streamingRecommend, streamingStatus, setSpotifyCreds } from "../src/streaming/spotify.ts";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(__dir, "public");
@@ -32,19 +34,79 @@ const MIME = { ".html": "text/html", ".css": "text/css", ".js": "text/javascript
 // Shared, mutable engine config the loop reads on each evaluate().
 const engineConfig = { limit: 10, energyDirection: "flat" };
 
-// Filter state (energy band + genre), applied to candidates before ranking.
-const filterState = { energy: "any", genre: "any" };
-function passesFilter(t) {
+// Filter state, applied to candidates (relative to the seed) before ranking.
+const filterState = {
+  energy: "any",   // any | chill | mid | hot
+  genre: "any",
+  bpm: "any",      // any | 3 | 5 | range
+  bpmMin: null,
+  bpmMax: null,
+  clean: "any",    // any | clean | dirty
+  key: "any",      // any | match | compatible | boost
+};
+
+// Effective BPM offset honouring half/double time (mirrors the display logic).
+function effectiveBpmDelta(seedBpm, candBpm) {
+  if (!seedBpm || !candBpm) return null;
+  const variants = [candBpm, candBpm / 2, candBpm * 2];
+  return Math.min(...variants.map((v) => Math.abs(v - seedBpm)));
+}
+
+function passesFilter(t, seed) {
+  // Energy (absolute band)
   if (filterState.energy !== "any") {
     const e = t.energy ?? 5;
     if (filterState.energy === "chill" && e > 4) return false;
     if (filterState.energy === "mid" && (e < 5 || e > 6)) return false;
     if (filterState.energy === "hot" && e < 7) return false;
   }
+  // Genre (absolute)
   if (filterState.genre !== "any") {
     if (!t.genre || !t.genre.toLowerCase().includes(filterState.genre.toLowerCase())) return false;
   }
+  // Clean / dirty — "clean" avoids explicit content; "dirty" avoids the clean edit.
+  if (filterState.clean === "clean" && /\b(dirty|explicit)\b/i.test(t.title)) return false;
+  if (filterState.clean === "dirty" && /\bclean\b/i.test(t.title)) return false;
+  // BPM — ±3 / ±5 relative to the seed (with half/double), or an absolute range.
+  if (filterState.bpm === "3" || filterState.bpm === "5") {
+    const d = effectiveBpmDelta(seed?.bpm, t.bpm);
+    if (d == null || d > Number(filterState.bpm) + 0.5) return false;
+  } else if (filterState.bpm === "range") {
+    if (t.bpm == null) return false;
+    if (filterState.bpmMin != null && t.bpm < filterState.bpmMin) return false;
+    if (filterState.bpmMax != null && t.bpm > filterState.bpmMax) return false;
+  }
+  // Key relationship to the seed.
+  if (filterState.key !== "any") {
+    const compat = keyCompatibility(seed?.key, t.key);
+    if (!seed?.key || !t.key) return false; // can't judge → exclude when a key filter is on
+    if (filterState.key === "match" && t.key.camelot !== seed.key.camelot) return false;
+    if (filterState.key === "compatible" && compat < 0.85) return false;
+    if (filterState.key === "boost" && !(compat >= 0.68 && compat < 0.85)) return false;
+  }
   return true;
+}
+
+// ---- local settings (Spotify creds + future syncs), persisted outside git ----
+const CONFIG_PATH = join(__dirname_root(), ".config.json");
+function __dirname_root() {
+  return join(dirname(fileURLToPath(import.meta.url)), "..");
+}
+let appConfig = { spotify: { clientId: "", clientSecret: "" } };
+async function loadConfig() {
+  if (existsSync(CONFIG_PATH)) {
+    try {
+      appConfig = { ...appConfig, ...JSON.parse(await readFile(CONFIG_PATH, "utf8")) };
+    } catch { /* ignore corrupt config */ }
+  }
+  applyConfig();
+}
+async function saveConfig() {
+  await writeFile(CONFIG_PATH, JSON.stringify(appConfig, null, 2));
+}
+function applyConfig() {
+  const sp = appConfig.spotify || {};
+  if (sp.clientId && sp.clientSecret) setSpotifyCreds(sp.clientId, sp.clientSecret);
 }
 
 /** SSE clients. */
@@ -117,25 +179,62 @@ function toWire(s, seed) {
   };
 }
 
-/** Build a suggestions payload for an arbitrary seed track (now-playing OR manual prep). */
-function buildPayload(seed, suggestions, computeMs, source = "live") {
+/** Compact "track head" shape for now-playing / deck display. */
+function seedInfo(seed) {
+  return {
+    id: seed.id,
+    title: seed.title,
+    artist: seed.artist,
+    camelot: seed.key?.camelot ?? null,
+    bpm: seed.bpm ?? null,
+    energy: seed.energy ?? null,
+    energyReal: seed.raw?.energySource === "audio",
+  };
+}
+
+/**
+ * Build a suggestions payload.
+ * @param opts.decks     [{deck, seed}] deck states (live only)
+ * @param opts.activeDeck the deck suggestions are for
+ */
+function buildPayload(seed, suggestions, computeMs, source = "live", opts = {}) {
   return {
     source, // "live" (Serato now-playing) | "prep" (manual seed)
     computeMs,
-    nowPlaying: {
-      id: seed.id,
-      title: seed.title,
-      artist: seed.artist,
-      camelot: seed.key?.camelot ?? null,
-      bpm: seed.bpm ?? null,
-      energy: seed.energy ?? null,
-      energyReal: seed.raw?.energySource === "audio",
-    },
+    nowPlaying: seedInfo(seed),
+    activeDeck: opts.activeDeck ?? null,
+    decks: (opts.decks || []).map((d) => ({ deck: d.deck, ...seedInfo(d.seed || d.nowPlaying) })),
     list: suggestions.map((s) => toWire(s, seed)),
   };
 }
 
 let currentSeed = null; // last seed (live or prep), for streaming lookups
+let deckSeeds = {};     // deck number -> current seed Track (for /deck focus)
+let lastActiveDeck = null;
+let focusedDeck = null; // user-selected deck (overrides live active until a real change)
+
+/** Rank + broadcast suggestions for a specific deck's track. */
+function broadcastDeckRank(deck) {
+  const seed = deckSeeds[deck];
+  if (!seed) return false;
+  currentSeed = seed;
+  const t0 = performance.now();
+  const cands = loopHandle.pool.filter((tt) => passesFilter(tt, seed));
+  const suggestions = recommend({ seed }, cands, engineConfig);
+  lastPayload = buildPayload(seed, suggestions, performance.now() - t0, "live", {
+    decks: Object.entries(deckSeeds).map(([d, s]) => ({ deck: Number(d), seed: s })),
+    activeDeck: deck,
+  });
+  broadcast("suggestions", lastPayload);
+  void emitStreaming(seed);
+  return true;
+}
+
+/** Re-rank after a config/filter change: keep the focused deck if one is selected. */
+async function reRank() {
+  if (focusedDeck != null && broadcastDeckRank(focusedDeck)) return;
+  await loopHandle.rerun();
+}
 
 /** Fire off a streaming (Spotify) lookup for a seed and broadcast when it returns. */
 async function emitStreaming(seed) {
@@ -163,6 +262,7 @@ function topGenres(pool, n = 14) {
 }
 
 async function main() {
+  await loadConfig(); // apply saved Spotify creds before anything queries streaming
   console.log("Starting engine…");
   loopHandle = await startLiveLoop({
     config: engineConfig,
@@ -174,7 +274,13 @@ async function main() {
         id: e.nowPlaying.id, title: e.nowPlaying.title, artist: e.nowPlaying.artist,
       };
       currentSeed = seed;
-      lastPayload = buildPayload(seed, e.suggestions, e.computeMs, "live");
+      lastActiveDeck = e.activeDeck;
+      focusedDeck = null; // a real Serato change supersedes any manual deck focus
+      deckSeeds = {};
+      for (const d of e.decks || []) if (d.seed) deckSeeds[d.deck] = d.seed;
+      lastPayload = buildPayload(seed, e.suggestions, e.computeMs, "live", {
+        decks: e.decks, activeDeck: e.activeDeck,
+      });
       broadcast("suggestions", lastPayload);
       void emitStreaming(seed);
     },
@@ -198,22 +304,66 @@ async function main() {
         filter: filterState,
         energyDirection: engineConfig.energyDirection,
         streaming: streamingStatus(),
+        settings: { spotify: { clientId: appConfig.spotify.clientId || "", hasSecret: !!appConfig.spotify.clientSecret } },
       });
       if (lastPayload) sse(res, "suggestions", lastPayload);
       req.on("close", () => clients.delete(res));
       return;
     }
 
-    // Energy / genre filter change → re-rank the current seed.
+    // Focus a specific deck → re-rank suggestions against that deck's track.
+    if (url.pathname === "/deck" && req.method === "POST") {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", async () => {
+        try {
+          const { deck } = JSON.parse(body || "{}");
+          if (!deckSeeds[deck]) return res.writeHead(404).end('{"ok":false}');
+          focusedDeck = Number(deck);
+          broadcastDeckRank(focusedDeck);
+          res.writeHead(200).end('{"ok":true}');
+        } catch {
+          res.writeHead(400).end('{"ok":false}');
+        }
+      });
+      return;
+    }
+
+    // Save settings (Spotify credentials) → persist + apply live.
+    if (url.pathname === "/settings" && req.method === "POST") {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", async () => {
+        try {
+          const { spotify } = JSON.parse(body || "{}");
+          if (spotify) {
+            if (typeof spotify.clientId === "string") appConfig.spotify.clientId = spotify.clientId.trim();
+            if (typeof spotify.clientSecret === "string" && spotify.clientSecret) appConfig.spotify.clientSecret = spotify.clientSecret.trim();
+          }
+          await saveConfig();
+          applyConfig();
+          if (currentSeed) void emitStreaming(currentSeed);
+          res.writeHead(200).end(JSON.stringify({ ok: true, streaming: streamingStatus() }));
+        } catch (e) {
+          res.writeHead(400).end(JSON.stringify({ ok: false, error: String(e.message || e) }));
+        }
+      });
+      return;
+    }
+
+    // Filter change → re-rank the current seed.
     if (url.pathname === "/filter" && req.method === "POST") {
       let body = "";
       req.on("data", (c) => (body += c));
       req.on("end", async () => {
         try {
-          const { energy, genre } = JSON.parse(body || "{}");
-          if (typeof energy === "string") filterState.energy = energy;
-          if (typeof genre === "string") filterState.genre = genre;
-          await loopHandle.rerun();
+          const f = JSON.parse(body || "{}");
+          for (const key of ["energy", "genre", "bpm", "clean", "key"]) {
+            if (typeof f[key] === "string") filterState[key] = f[key];
+          }
+          if ("bpmMin" in f) filterState.bpmMin = f.bpmMin === null || f.bpmMin === "" ? null : Number(f.bpmMin);
+          if ("bpmMax" in f) filterState.bpmMax = f.bpmMax === null || f.bpmMax === "" ? null : Number(f.bpmMax);
+          await reRank();
           res.writeHead(200).end(JSON.stringify({ ok: true, filter: filterState }));
         } catch {
           res.writeHead(400).end('{"ok":false}');
@@ -249,7 +399,7 @@ async function main() {
           const { energyDirection } = JSON.parse(body || "{}");
           if (["flat", "build", "cool"].includes(energyDirection)) {
             engineConfig.energyDirection = energyDirection;
-            await loopHandle.rerun(); // recompute current track with the new trajectory
+            await reRank(); // recompute (keeps the focused deck if one is selected)
           }
           res.writeHead(200).end('{"ok":true}');
         } catch {
@@ -300,7 +450,7 @@ async function main() {
           if (!seed) return res.writeHead(404).end('{"ok":false}');
           currentSeed = seed;
           const t0 = performance.now();
-          const cands = loopHandle.pool.filter(passesFilter);
+          const cands = loopHandle.pool.filter((tt) => passesFilter(tt, seed));
           const suggestions = recommend({ seed }, cands, engineConfig);
           lastPayload = buildPayload(seed, suggestions, performance.now() - t0, "prep");
           broadcast("suggestions", lastPayload);
@@ -313,8 +463,9 @@ async function main() {
       return;
     }
 
-    // Return to live now-playing (leave prep mode).
+    // Return to live now-playing (leave prep mode / deck focus).
     if (url.pathname === "/live" && req.method === "POST") {
+      focusedDeck = null;
       await loopHandle.rerun();
       res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}');
       return;

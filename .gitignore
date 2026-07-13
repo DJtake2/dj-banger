@@ -5,6 +5,9 @@ dist/
 # user-specific analysis cache (regenerates from your library)
 .cache/
 
+# local settings (contains Spotify client secret)
+.config.json
+
 # logs / os
 *.log
 .DS_Store

@@ -12,16 +12,28 @@
 import { watch } from "node:fs";
 import type { Track, Suggestion, EngineConfig } from "./types.ts";
 import { loadLibrary, defaultSeratoDir } from "./serato/library.ts";
-import { getNowPlaying, sessionsDir, type NowPlaying } from "./serato/history.ts";
+import { getDecks, sessionsDir, type NowPlaying } from "./serato/history.ts";
 import { recommend } from "./engine.ts";
 import { writeSuggestionsCrate } from "./serato/crateWriter.ts";
 import { EnergyStore } from "./analysis/energyStore.ts";
 import { applyCachedEnergy } from "./analysis/applyEnergy.ts";
 import { analyzeFile, energyFromFeatures } from "./analysis/analyze.ts";
 
-export interface LiveEvent {
+export interface DeckInfo {
+  deck: number;
   nowPlaying: NowPlaying;
-  /** The matched library track (full metadata), if the played file is in the library. */
+  /** The matched library track (full metadata, live energy), if in the library. */
+  seed?: Track;
+}
+
+export interface LiveEvent {
+  /** Per-deck state (Serato decks 1–4). */
+  decks: DeckInfo[];
+  /** The active/incoming deck that drives suggestions by default. */
+  activeDeck: number;
+  /** Active deck's now-playing (kept for back-compat with single-deck consumers). */
+  nowPlaying: NowPlaying;
+  /** Active deck's matched library track. */
   seed?: Track;
   suggestions: Suggestion[];
   /** ms from detecting the change to suggestions ready (excludes Serato's own write delay). */
@@ -44,8 +56,9 @@ export interface LiveOptions {
   pollMs?: number;
   /** Analyze the currently-playing track's real energy on the fly (~0.3s). Default true. */
   analyzeSeedLive?: boolean;
-  /** Optional candidate filter (energy/genre etc.). Read fresh each pass so it can change. */
-  candidateFilter?: (t: Track) => boolean;
+  /** Optional candidate filter (energy/genre/bpm/key etc.), relative to the seed. Read fresh
+   *  each pass so it can change without restarting. */
+  candidateFilter?: (t: Track, seed: Track) => boolean;
   /** Called on every new track. */
   onEvent: (e: LiveEvent) => void;
   /** Optional logger. */
@@ -99,6 +112,24 @@ export async function startLiveLoop(opts: LiveOptions): Promise<LiveHandle> {
   let pending = false;
   let debounceTimer: NodeJS.Timeout | null = null;
 
+  // Resolve a history entry to a full library Track with real (live-analysed) energy.
+  async function resolveSeed(np: NowPlaying): Promise<Track> {
+    const seed = byId.get(np.id) ?? nowPlayingToTrack(np);
+    if (analyzeSeedLive && seed.raw?.energySource !== "audio") {
+      const cached = store.peek(seed.absPath);
+      const feats = cached ?? (await analyzeFile(seed.absPath));
+      if (feats) {
+        seed.energy = energyFromFeatures(feats, seed.bpm);
+        if (seed.raw) seed.raw.energySource = "audio";
+        if (!cached) {
+          await store.set(seed.absPath, feats);
+          void store.save();
+        }
+      }
+    }
+    return seed;
+  }
+
   async function evaluate() {
     if (running) {
       pending = true;
@@ -106,29 +137,27 @@ export async function startLiveLoop(opts: LiveOptions): Promise<LiveHandle> {
     }
     running = true;
     try {
-      const np = await getNowPlaying(seratoDir);
-      if (!np) return;
-      if (np.id === lastSeedId) return; // same track, nothing to do
-      lastSeedId = np.id;
+      const state = await getDecks(seratoDir);
+      if (state.activeDeck == null) return;
 
-      const seed = byId.get(np.id) ?? nowPlayingToTrack(np);
+      // Composite key of all deck tracks → recompute when EITHER deck changes.
+      const key = Object.entries(state.decks).map(([d, t]) => `${d}:${t.id}`).sort().join("|");
+      if (key === lastSeedId) return;
+      lastSeedId = key;
 
-      // Ensure the currently-playing track has REAL energy (analyze once, cache forever).
-      if (analyzeSeedLive && seed.raw?.energySource !== "audio") {
-        const cached = store.peek(seed.absPath);
-        const feats = cached ?? (await analyzeFile(seed.absPath));
-        if (feats) {
-          seed.energy = energyFromFeatures(feats, seed.bpm);
-          if (seed.raw) seed.raw.energySource = "audio";
-          if (!cached) {
-            await store.set(seed.absPath, feats);
-            void store.save();
-          }
-        }
+      // Resolve + analyse energy for every deck's track.
+      const deckInfos: DeckInfo[] = [];
+      for (const [d, np] of Object.entries(state.decks)) {
+        const seed = await resolveSeed(np);
+        deckInfos.push({ deck: Number(d), nowPlaying: np, seed });
       }
+      deckInfos.sort((a, b) => a.deck - b.deck);
+
+      const active = deckInfos.find((d) => d.deck === state.activeDeck) ?? deckInfos[deckInfos.length - 1];
+      const seed = active.seed!;
 
       const c0 = performance.now();
-      const cands = opts.candidateFilter ? pool.filter(opts.candidateFilter) : pool;
+      const cands = opts.candidateFilter ? pool.filter((t) => opts.candidateFilter!(t, seed)) : pool;
       const suggestions = recommend({ seed }, cands, opts.config);
       const computeMs = performance.now() - c0;
 
@@ -144,7 +173,15 @@ export async function startLiveLoop(opts: LiveOptions): Promise<LiveHandle> {
         }
       }
 
-      opts.onEvent({ nowPlaying: np, seed: byId.get(np.id), suggestions, computeMs, cratePath });
+      opts.onEvent({
+        decks: deckInfos,
+        activeDeck: active.deck,
+        nowPlaying: active.nowPlaying,
+        seed,
+        suggestions,
+        computeMs,
+        cratePath,
+      });
     } finally {
       running = false;
       if (pending) {
