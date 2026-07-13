@@ -26,6 +26,25 @@ export function setSpotifyCreds(id?: string, secret?: string): void {
   token = null;
 }
 
+/** Validate a pair of credentials with a one-off token request (does not persist them). */
+export async function testSpotifyCreds(id?: string, secret?: string): Promise<{ ok: boolean; status?: number; error?: string }> {
+  if (!id || !secret) return { ok: false, error: "missing credentials" };
+  try {
+    const res = await fetch("https://accounts.spotify.com/api/token", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        authorization: "Basic " + Buffer.from(`${id.trim()}:${secret.trim()}`).toString("base64"),
+      },
+      body: "grant_type=client_credentials",
+    });
+    if (res.ok) return { ok: true };
+    return { ok: false, status: res.status, error: res.status === 400 || res.status === 401 ? "invalid client id/secret" : `spotify ${res.status}` };
+  } catch (e) {
+    return { ok: false, error: String((e as Error).message || e) };
+  }
+}
+
 export interface StreamingTrack {
   title: string;
   artist: string;

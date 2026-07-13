@@ -86,13 +86,24 @@ html, body {
   font-weight: 700; letter-spacing: 0.14em; font-size: 11px;
   color: var(--text);
 }
-.brand .spark {
-  width: 16px; height: 16px; border-radius: 5px;
-  background: linear-gradient(135deg, var(--accent), #b78dff);
-  box-shadow: 0 0 12px var(--accent-glow);
-  display: grid; place-items: center;
+/* Animated brand mark: a spinning turntable with a flickering flame */
+.tt { position: relative; width: 22px; height: 22px; display: inline-grid; place-items: center; flex: none; }
+.tt-disc { width: 20px; height: 20px; animation: tt-spin 2.4s linear infinite; }
+.tt-flame {
+  position: absolute; top: -6px; left: 50%; width: 15px; height: 15px;
+  transform: translateX(-50%);
+  transform-origin: 50% 92%;
+  filter: drop-shadow(0 0 3px rgba(255, 120, 30, 0.55));
+  animation: tt-flicker 0.42s ease-in-out infinite alternate;
 }
-.brand .spark svg { width: 10px; height: 10px; }
+@keyframes tt-spin { to { transform: rotate(360deg); } }
+@keyframes tt-flicker {
+  0%   { transform: translateX(-50%) scale(0.96, 0.98) rotate(-4deg); opacity: 0.88; }
+  100% { transform: translateX(-50%) scale(1.08, 1.14) rotate(4deg); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tt-disc, .tt-flame { animation: none; }
+}
 .brand .dim { color: var(--text-faint); font-weight: 600; letter-spacing: 0.14em; }
 
 .titlebar .status {
@@ -489,8 +500,15 @@ html, body {
   color: var(--text); font: inherit; font-size: 12px; padding: 8px 10px;
 }
 .sync input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
-.sync .primary { appearance: none; border: 0; cursor: pointer; background: var(--accent); color: #fff; font: inherit; font-size: 12px; font-weight: 650; padding: 8px; border-radius: 8px; }
+.sync .primary { appearance: none; border: 0; cursor: pointer; background: var(--accent); color: #fff; font: inherit; font-size: 12px; font-weight: 650; padding: 8px 12px; border-radius: 8px; }
 .sync .primary:hover { background: color-mix(in srgb, var(--accent) 85%, #fff); }
+.sp-actions { display: flex; gap: 8px; }
+.sp-actions .primary { flex: 1; }
+.ghostbtn { appearance: none; cursor: pointer; background: var(--surface-2); color: var(--text-dim); border: 1px solid var(--border-soft); font: inherit; font-size: 12px; font-weight: 650; padding: 8px 12px; border-radius: 8px; }
+.ghostbtn:hover { color: var(--text); background: var(--surface-3); }
+.sp-result { font-size: 11px; font-weight: 600; padding: 2px 2px 0; }
+.sp-result.ok { color: var(--match-perfect); }
+.sp-result.bad { color: var(--match-clash); }
 .sync.muted .sync-head { color: var(--text-dim); }
 .syncrow { display: flex; align-items: center; padding: 7px 2px; border-bottom: 1px solid var(--border-soft); font-size: 12px; color: var(--text-dim); }
 .syncrow:last-child { border-bottom: 0; }

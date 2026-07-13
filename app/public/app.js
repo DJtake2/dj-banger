@@ -378,6 +378,24 @@ function syncSettings(s) {
   st.textContent = connected ? "connected" : "not connected";
   st.classList.toggle("on", connected);
 }
+el("spTest").addEventListener("click", async () => {
+  const btn = el("spTest"), out = el("spResult");
+  btn.textContent = "Testing…"; btn.disabled = true;
+  out.hidden = true; out.className = "sp-result";
+  try {
+    const r = await fetch("/spotify/test", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ clientId: el("spClientId").value, clientSecret: el("spClientSecret").value }),
+    });
+    const j = await r.json();
+    out.hidden = false;
+    out.classList.add(j.ok ? "ok" : "bad");
+    out.textContent = j.ok ? "✓ Credentials valid — Spotify reachable." : `✗ ${j.error || "connection failed"}`;
+  } catch {
+    out.hidden = false; out.classList.add("bad"); out.textContent = "✗ Could not reach the server.";
+  }
+  btn.textContent = "Test connection"; btn.disabled = false;
+});
 el("spSave").addEventListener("click", async () => {
   const btn = el("spSave");
   btn.textContent = "Saving…"; btn.disabled = true;

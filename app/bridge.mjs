@@ -23,7 +23,7 @@ import { startLiveLoop } from "../src/live.ts";
 import { recommend } from "../src/engine.ts";
 import { keyCompatibility } from "../src/camelot.ts";
 import { writeSuggestionsCrate } from "../src/serato/crateWriter.ts";
-import { streamingRecommend, streamingStatus, setSpotifyCreds, spotifyCharts } from "../src/streaming/spotify.ts";
+import { streamingRecommend, streamingStatus, setSpotifyCreds, spotifyCharts, testSpotifyCreds } from "../src/streaming/spotify.ts";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(__dir, "public");
@@ -296,6 +296,22 @@ async function main() {
       });
       if (lastPayload) sse(res, "decks", lastPayload);
       req.on("close", () => clients.delete(res));
+      return;
+    }
+
+    // Test Spotify credentials without saving.
+    if (url.pathname === "/spotify/test" && req.method === "POST") {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", async () => {
+        try {
+          const { clientId, clientSecret } = JSON.parse(body || "{}");
+          const r = await testSpotifyCreds(clientId, clientSecret);
+          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(r));
+        } catch (e) {
+          res.writeHead(400).end(JSON.stringify({ ok: false, error: String(e.message || e) }));
+        }
+      });
       return;
     }
 
