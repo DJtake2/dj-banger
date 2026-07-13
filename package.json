@@ -1,0 +1,19 @@
+{
+  "name": "dj-banger-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone next-track recommendation engine for Serato DJ (Banger Button-style). Pure TS, zero runtime deps.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "BANGER_OPEN=1 node app/bridge.mjs",
+    "test": "node --test",
+    "demo": "node src/cli.ts",
+    "scan": "node src/cli.ts --scan",
+    "live": "node src/liveCli.ts",
+    "nowplaying": "node src/cli.ts --nowplaying",
+    "analyze": "node src/analyzeCli.ts"
+  }
+}

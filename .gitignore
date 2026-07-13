@@ -1,0 +1,14 @@
+# deps / build
+node_modules/
+dist/
+
+# user-specific analysis cache (regenerates from your library)
+.cache/
+
+# logs / os
+*.log
+.DS_Store
+
+# Rust / Tauri build output
+app/src-tauri/target/
+app/src-tauri/gen/

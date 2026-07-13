@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Banger</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <!-- Title bar (window drag region) -->
+    <div class="titlebar">
+      <div class="brand">
+        <span class="spark">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z" fill="#0b0f14"/></svg>
+        </span>
+        BANGER <span class="dim">· serato</span>
+      </div>
+      <div class="status">
+        <span id="statusDot" class="dot off"></span>
+        <span id="statusText">connecting…</span>
+      </div>
+    </div>
+
+    <!-- Manual seed / prep search -->
+    <div class="search">
+      <svg class="mag" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2" stroke-linecap="round"/>
+      </svg>
+      <input id="searchInput" type="text" spellcheck="false" autocomplete="off"
+             placeholder="Search a track to prep…" />
+      <button id="clearSearch" class="clear" hidden aria-label="Clear">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18" stroke-linecap="round"/></svg>
+      </button>
+      <div class="dropdown" id="dropdown" hidden></div>
+    </div>
+
+    <!-- Now playing -->
+    <div class="now" id="now" hidden>
+      <div class="eyebrow" id="npEyebrow">
+        <span class="onair" id="npDot"></span> <span id="npLabel">NOW PLAYING</span>
+        <button id="backLive" class="livebtn" hidden>● BACK TO LIVE</button>
+      </div>
+      <div class="title" id="npTitle">—</div>
+      <div class="artist" id="npArtist"></div>
+      <div class="stats" id="npStats"></div>
+    </div>
+
+    <!-- Filters -->
+    <div class="filters" id="filters" hidden>
+      <div class="fseg" id="energyFilter" data-kind="energy">
+        <span class="flabel">EN</span>
+        <button data-v="any" class="on">All</button>
+        <button data-v="chill">Chill</button>
+        <button data-v="mid">Mid</button>
+        <button data-v="hot">Hot</button>
+      </div>
+      <div class="fgenre">
+        <select id="genreFilter" aria-label="Genre filter">
+          <option value="any">All genres</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Scrollable content: library suggestions + streaming -->
+    <div class="scroll" id="scroll">
+      <div class="section-head" id="nextHead" hidden>
+        <h2>NEXT UP</h2>
+        <span class="meta" id="nextMeta"></span>
+      </div>
+
+      <div class="list" id="list">
+        <div class="empty" id="empty">
+          <div class="spinner"></div>
+          <div class="big">Waiting for Serato…</div>
+          <div>Play a track and suggestions appear here.</div>
+        </div>
+      </div>
+
+      <!-- Streaming (Spotify) recommendations -->
+      <div class="stream" id="stream" hidden>
+        <div class="section-head">
+          <h2><span class="sp-dot"></span> FROM SPOTIFY</h2>
+          <span class="meta" id="streamMeta"></span>
+        </div>
+        <div class="list streamlist" id="streamList"></div>
+      </div>
+    </div>
+
+    <!-- Selection action bar (multi-select → crate) -->
+    <div class="selbar" id="selbar" hidden>
+      <span id="selCount">0 selected</span>
+      <button class="ghost" id="selClear">Clear</button>
+      <button class="primary" id="selExport">Export crate</button>
+    </div>
+
+    <!-- Footer: energy trajectory + drag hint -->
+    <div class="footer">
+      <span class="grip">
+        <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="8" cy="6" r="1.6"/><circle cx="8" cy="12" r="1.6"/><circle cx="8" cy="18" r="1.6"/><circle cx="16" cy="6" r="1.6"/><circle cx="16" cy="12" r="1.6"/><circle cx="16" cy="18" r="1.6"/></svg>
+        drag a track to your deck
+      </span>
+      <div class="seg" id="energySeg">
+        <button data-dir="cool">Cool</button>
+        <button data-dir="flat" class="on">Flat</button>
+        <button data-dir="build">Build</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

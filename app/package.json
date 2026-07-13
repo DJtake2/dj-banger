@@ -1,0 +1,16 @@
+{
+  "name": "banger-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Floating always-on-top window for dj-banger (Tauri v2 shell + engine bridge).",
+  "scripts": {
+    "bridge": "node bridge.mjs",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.3"
+  }
+}
