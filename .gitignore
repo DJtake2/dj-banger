@@ -20,3 +20,4 @@ app/src-tauri/sidecar/
 # updater signing key lives in \$HOME, never here — belt & suspenders
 *.key
 *.key.pub
+.bench/

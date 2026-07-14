@@ -23,6 +23,7 @@ import { createHash } from "node:crypto";
 import { startLiveLoop } from "../src/live.ts";
 import { recommend } from "../src/engine.ts";
 import { loadArtistAffinity, EMPTY_AFFINITY } from "../src/affinity.ts";
+import { DeezerSimilarity } from "../src/deezerSimilarity.ts";
 import { parseDoNotPlay, matchDoNotPlay, isDoNotPlay } from "../src/dnp.ts";
 import { keyCompatibility } from "../src/camelot.ts";
 import { writeSuggestionsCrate } from "../src/serato/crateWriter.ts";
@@ -104,6 +105,7 @@ function __dirname_root() {
 let appConfig = { spotify: { clientId: "", clientSecret: "" }, tidal: { clientId: "", clientSecret: "" }, streamingService: "spotify", doNotPlay: "" };
 let dnpEntries = [];               // parsed Do-Not-Play list (one entry per line)
 let artistAffinity = EMPTY_AFFINITY; // co-play index; rebuilt from history on startup
+const deezerSim = new DeezerSimilarity(); // artist-similarity neighborhood (Deezer, warmed per seed)
 async function loadConfig() {
   if (existsSync(CONFIG_PATH)) {
     try {
@@ -498,14 +500,26 @@ async function fillPopForDecks(decks, source) {
   if (await fillPop(tracks)) broadcastDecks(source, true); // re-rank with popularity; no further fill
 }
 
-function broadcastDecks(source = "live", skipPopFill = false) {
+/** Warm each deck's seed artist neighborhood (Deezer), then re-rank once if anything was learned. */
+async function fillSimForDecks(source) {
+  let changed = false;
+  for (const seed of Object.values(deckSeeds)) {
+    if (seed && (await deezerSim.warm(seed.artist))) changed = true;
+  }
+  if (changed) { void deezerSim.save(); broadcastDecks(source, true); } // re-rank with similarity live
+}
+
+function broadcastDecks(source = "live", skipFill = false) {
   if (!loopHandle) return []; // library not ready yet (initial startup event)
   const decks = Object.entries(deckSeeds)
     .map(([d, seed]) => rankDeck(Number(d), seed))
     .sort((a, b) => a.deck - b.deck);
   lastPayload = { source, decks };
   broadcast("decks", lastPayload);
-  if (!skipPopFill) void fillPopForDecks(decks, source); // fill world popularity, then re-rank
+  if (!skipFill) {
+    void fillSimForDecks(source);      // warm Deezer artist-similarity, then re-rank
+    void fillPopForDecks(decks, source); // fill world popularity, then re-rank
+  }
   return decks;
 }
 
@@ -585,8 +599,11 @@ async function main() {
   try {
     const t = performance.now();
     artistAffinity = await loadArtistAffinity(loopHandle.pool);
-    engineConfig.artistAffinity = (a, b) => artistAffinity.score(a, b);
-    console.log(`Artist affinity: ${artistAffinity.size} artists (${Math.round(performance.now() - t)}ms)`);
+    await deezerSim.load(join(CACHE_ROOT, "deezer-artists.json")); // persisted + bundled seed
+    // Blend: Deezer "cultural association" (Camila→Taylor/Dua) when we've warmed the seed's
+    // neighborhood, else fall back to this DJ's own co-play history. max() so neither penalizes.
+    engineConfig.artistAffinity = (a, b) => Math.max(artistAffinity.score(a, b), deezerSim.score(a, b));
+    console.log(`Artist affinity: ${artistAffinity.size} co-play + ${deezerSim.size} Deezer artists (${Math.round(performance.now() - t)}ms)`);
     await loopHandle.rerun(); // re-rank now that affinity is live
   } catch (e) {
     console.log("Artist affinity unavailable:", e?.message || e);

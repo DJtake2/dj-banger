@@ -23,4 +23,11 @@ cp -R ../src "$ST/src"
 cp -R public "$ST/app/public"
 cp bridge.mjs "$ST/app/bridge.mjs"
 
+# Seed caches so a fresh install ships with data instead of re-fetching everything:
+# world popularity (Deezer ranks) + artist-similarity neighborhoods. Both are runtime-topped-up.
+mkdir -p "$ST/.cache"
+for f in popularity.json deezer-artists.json; do
+  [ -f "../.cache/$f" ] && cp "../.cache/$f" "$ST/.cache/$f" && echo "  bundled cache: $f"
+done
+
 echo "staged sidecar → $ST (node $($NODE_BIN --version))"
