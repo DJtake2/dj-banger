@@ -22,10 +22,6 @@ const EDIT_MARKERS = [
   "quick hit", "quickhit", "quickhitter", "short", "snippet", "snip", "transition", "trans", "starter",
   "ending", "version", "ver", "mm edit", "mmedit", "dub edit", "club edit", "no tag", "notag",
   "hype", "loop", "extended mix", "radio edit", "main", "album version", "single version",
-  // record-pool arrangement tags — same song, marked by which section is exposed
-  "acc", "aca", "acc in", "acc out", "aca in", "aca out", "acapella in", "acapella out",
-  "verse", "verse in", "verse out", "hook", "hook in", "hook out", "chorus", "segue",
-  "in out", "quick hitter", "qh", "mmp", "billboard edit",
   // alternate productions of the same song — now collapsed too (per DJ feedback)
   "remix", "rmx", "bootleg", "flip", "vip", "refix", "rework", "live", "remaster", "remastered",
 ];
@@ -43,44 +39,51 @@ function isEditChunk(chunk: string): boolean {
   return editWordRe.test(chunk) && !keepWordRe.test(chunk);
 }
 
-/** Strip parenthetical/bracketed edit chunks and trailing " - <edit>" segments, keeping bare words. */
-function stripEditSegments(s: string): string {
-  // Drop parenthetical / bracketed chunks that are pure edit markers, e.g. "(Intro - Dirty)".
-  s = s.replace(/[([{][^)\]}]*[)\]}]/g, (m) => (isEditChunk(m) ? " " : m));
-  // Drop trailing " - <edit descriptor>" segments, e.g. " - Kid Cut Up Kanye First Edit".
+/**
+ * Strip ALL parenthetical/bracket/brace chunks — `(…)`, `[…]`, `{…}` — regardless of content, the
+ * way the reference app's `normalizeForMatch` does. Record-pool titles bury version, edit, producer
+ * (`(DJ Mustard)`, `[Prod. By …]`), arrangement (`{Cold Drop}`, `(Acc Out)`) and featured
+ * (`(Feat. …)`) tags in brackets; wholesale stripping collapses every edit of a song without a
+ * curated marker list. Chunks that name a genuinely DIFFERENT track (mashup/blend/cover) are kept.
+ */
+function stripBracketChunks(s: string): string {
+  return s.replace(/[([{][^)\]}]*[)\]}]/g, (m) => (keepWordRe.test(m) ? m : " "));
+}
+
+/** Drop trailing " - <edit descriptor>" segments, e.g. " - Kid Cut Up Kanye First Edit". */
+function stripTrailingEditSegments(s: string): string {
   const segs = s.split(/\s[-–—]\s/);
-  if (segs.length > 1) {
-    s = segs.filter((seg, i) => i === 0 || !isEditChunk(seg)).join(" - ");
-  }
-  return s;
+  return segs.length > 1 ? segs.filter((seg, i) => i === 0 || !isEditChunk(seg)).join(" - ") : s;
 }
 
 /** Collapse featured credits + punctuation to a bare word sequence. */
 function tidy(s: string): string {
   return s
-    .replace(/\bfeat\.?\b|\bft\.?\b|\bfeaturing\b/g, " ")
+    .replace(/\b(feat\.?|ft\.?|featuring)\b.*$/i, " ") // "feat X" and everything after
+    .replace(/^\s*the\s+/i, " ") // leading "The "
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
 }
 
-/** Reduce a title to its base song identity. */
+/** Reduce a title to its base song identity (matches the reference matcher, plus bare-word edits). */
 export function normalizeTitle(title: string): string {
   let s = (title ?? "").toLowerCase();
-  s = stripEditSegments(s);
-  // Remove any remaining bare edit-marker words (but not keep-markers).
+  s = stripBracketChunks(s);
+  s = stripTrailingEditSegments(s);
+  // Remove any remaining BARE edit-marker words (e.g. "Blessings Remix"), unless a keep-marker is present.
   s = s.replace(editWordRe, (m) => (keepWordRe.test(s) && keepWordRe.test(m) ? m : " "));
   return tidy(s);
 }
 
 /**
- * Looser identity: strip edit CHUNKS/segments but KEEP bare edit words. Used only as a fallback
- * when the aggressive normalize empties the title — i.e. a song literally titled with an edit word
- * ("Remix", "Instrumental"). Without this, "Remix (Clean)" and "Remix (MMP Intro Edit) (Dirty)"
+ * Looser identity: strip bracket chunks + trailing segments but KEEP bare edit words. Used only as
+ * a fallback when the aggressive normalize empties the title — i.e. a song literally titled with an
+ * edit word ("Remix", "Instrumental"). Without this, "Remix (Clean)" and "Remix (MMP Intro Edit)"
  * both collapse to "" under the aggressive rule, so the empty-fallback kept their full raw titles
  * and they never de-duplicated. Keeping the bare word yields "remix" for both → one song.
  */
 export function looseTitle(title: string): string {
-  return tidy(stripEditSegments((title ?? "").toLowerCase()));
+  return tidy(stripTrailingEditSegments(stripBracketChunks((title ?? "").toLowerCase())));
 }
 
 /** Primary artist (drop featured/collab credits) for grouping. */
