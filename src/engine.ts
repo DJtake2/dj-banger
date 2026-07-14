@@ -9,7 +9,7 @@
 import type { Track, EngineConfig, Suggestion, MixContext } from "./types.ts";
 import { DEFAULT_CONFIG } from "./types.ts";
 import { keyCompatibility, keyRelation } from "./camelot.ts";
-import { sameSong, collapseVersions } from "./dedupe.ts";
+import { sameSong } from "./dedupe.ts";
 
 /** Score BPM proximity 0..1, honouring tolerance and optional half/double-time. */
 export function bpmScore(seedBpm: number | undefined, candBpm: number | undefined, cfg: EngineConfig): {
@@ -190,10 +190,18 @@ export function recommend(
   }
 
   out.sort((x, y) => y.score - x.score);
-  const ranked = cfg.dedupeVersions ? collapseVersions(out) : out;
-  // Quality floor: keep only picks within minScoreRatio of the best, so a seed with just a few
-  // strong matches returns a short list rather than 21 padded-out weak ones. Then cap at limit.
-  const floor = ranked.length ? ranked[0].score * cfg.minScoreRatio : 0;
-  const kept = ranked.filter((s) => s.score >= floor);
-  return kept.slice(0, cfg.limit);
+  // Collapse duplicates + apply the quality floor + cap, all in ONE best-first pass that STOPS as
+  // soon as it has `limit` distinct picks. Deduping the full scored pool (70k) with fuzzy title
+  // matching was O(n²) per artist and cost seconds; we only ever show `limit`, so we never need to
+  // look past the top handful of distinct songs. Sorted desc → once a score drops below the floor,
+  // everything after it does too, so we break.
+  const floor = out.length ? out[0].score * cfg.minScoreRatio : 0;
+  const kept: Suggestion[] = [];
+  for (const item of out) {
+    if (item.score < floor) break;
+    if (cfg.dedupeVersions && kept.some((k) => sameSong(k.track, item.track))) continue;
+    kept.push(item);
+    if (kept.length >= cfg.limit) break;
+  }
+  return kept;
 }
