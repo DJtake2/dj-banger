@@ -65,6 +65,23 @@ test("sameSong / collapseVersions tolerate inconsistent artist tags", () => {
   assert.deepEqual(kept.map((k) => k.track.id), ["a", "c"]); // b collapses into a
 });
 
+// Regression: a song whose TITLE is itself an edit word ("Remix", "Instrumental") normalised to
+// empty, so every edit fell back to its full raw title and none de-duplicated — the live app showed
+// 7 copies of Daddy Yankee "Remix". The loose fallback keeps the bare word so they collapse to one.
+test("collapseVersions collapses edit-word-titled songs", () => {
+  const titles = [
+    "Remix (Clean)", "Remix (MMP Intro Edit) (Dirty)", "Remix (Dirty)",
+    "Remix (MMP QuickHitter) (Clean)", "Remix (Instrumental)",
+  ];
+  const items = titles.map((title, i) => ({ track: { id: `r${i}`, absPath: `/r${i}`, title, artist: "Daddy Yankee" } as Track, score: 1 - i * 0.01 }));
+  const kept = collapseVersions(items);
+  assert.equal(kept.length, 1, "all edits of the same edit-word-titled song collapse");
+  assert.equal(kept[0].track.id, "r0"); // best (first) survives
+  // A different song by a different artist that also normalises loosely stays distinct.
+  const other = { track: { id: "x", absPath: "/x", title: "Remix (Clean)", artist: "2Pac" } as Track, score: 0.5 };
+  assert.equal(collapseVersions([...items, other]).length, 2);
+});
+
 // ---- engine de-dupe end to end ---------------------------------------------
 test("recommend de-dupes versions and excludes the seed's own song", () => {
   const mk = (id: string, title: string, key = "8A", bpm = 128): Track => ({

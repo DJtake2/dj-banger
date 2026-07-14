@@ -15,6 +15,7 @@
 
 import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { defaultSeratoDir } from "./library.ts";
 
 const utf16be = new TextDecoder("utf-16be");
@@ -198,31 +199,142 @@ function isMoreCurrent(a: NowPlaying, b: NowPlaying): boolean {
   return a.entryIndex > b.entryIndex; // no timestamps → fall back to file order
 }
 
+/** A resolved per-deck snapshot from one source, tagged with its freshest play time. */
+interface DeckSource {
+  decks: Record<number, NowPlaying>;
+  /** Max play start time (unix seconds) across the decks — used to arbitrate sources by recency. */
+  maxTs: number;
+  file: string | null;
+  /** File mtime (ms) of the source, for the cheap freshness gate. */
+  mtime: number | null;
+}
+
+/** macOS path to Serato 4's SQLite library (`master.sqlite`). */
+function v4DatabasePath(): string {
+  return join(homedir(), "Library", "Application Support", "Serato", "Library", "master.sqlite");
+}
+
 /**
- * Current per-deck state: the track currently loaded on each deck (Serato logs each play with its
- * deck in adat field 31). Entries without a deck number fall back to deck 1. Selection is by play
- * start time, not file order — see `isMoreCurrent`. The active/incoming deck is the one whose
- * current track is the most recent overall.
+ * Read now-playing per deck from Serato 4's `master.sqlite` (denormalized `history_entry` table).
+ * Mirrors the reference app's `_getV4LastPlayedTracks`. Uses Node's built-in `node:sqlite`
+ * (read-only) so there's no native dependency. Returns empty decks on ANY failure (locked DB,
+ * missing table, older Node) so the caller falls back to the legacy `.session` reader.
+ */
+async function readV4Decks(): Promise<DeckSource> {
+  const dbPath = v4DatabasePath();
+  const empty: DeckSource = { decks: {}, maxTs: 0, file: dbPath, mtime: null };
+  let db: { prepare: (s: string) => { get: (...a: unknown[]) => unknown; all: (...a: unknown[]) => unknown[] }; close: () => void } | null = null;
+  try {
+    const { DatabaseSync } = await import("node:sqlite");
+    db = new DatabaseSync(dbPath, { readOnly: true }) as unknown as typeof db;
+    const sess = db!.prepare("SELECT id FROM history_session ORDER BY start_time DESC LIMIT 1").get() as { id: number } | undefined;
+    if (!sess) return empty;
+    const rows = db!.prepare(
+      `SELECT portable_id, name, artist, key, bpm, deck, start_time FROM history_entry
+       WHERE session_id = ? AND deck IS NOT NULL AND deck != '' ORDER BY start_time DESC`,
+    ).all(sess.id) as Array<{ portable_id?: string; name?: string; artist?: string; key?: string; bpm?: number; deck?: string; start_time?: number }>;
+    const decks: Record<number, NowPlaying> = {};
+    let maxTs = 0;
+    for (const r of rows) {
+      let d = parseInt(String(r.deck), 10);
+      if (isNaN(d)) d = 1; // Serato 4 (Windows) has emitted non-numeric decks — surface on deck 1
+      if (d < 1 || d > 4) continue;
+      const ts = Number(r.start_time) || 0;
+      if (ts > maxTs) maxTs = ts;
+      if (decks[d]) continue; // rows are start_time DESC → first per deck is the most recent
+      const abs = r.portable_id ? `/${r.portable_id}` : ""; // portable_id is volume-relative
+      decks[d] = {
+        id: normalizeHistoryPath(abs),
+        absPath: abs,
+        title: r.name ?? "",
+        artist: r.artist ?? "",
+        deck: d,
+        startTime: ts,
+        sessionFile: dbPath,
+        entryIndex: 0,
+      };
+    }
+    return { decks, maxTs, file: dbPath, mtime: null };
+  } catch {
+    return empty;
+  } finally {
+    try { db?.close(); } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Read now-playing per deck from the legacy `.session` files. Scans the few most-recent sessions
+ * and uses the first that actually contains plays — on launch Serato often creates a fresh empty
+ * session (newest mtime) with no plays yet (reference: `_getLegacyLastPlayedTracks`). Within a
+ * session, each deck's current track is the one with the latest play start time (see `isMoreCurrent`).
+ */
+async function readLegacyDecks(seratoDir: string): Promise<DeckSource> {
+  const dir = sessionsDir(seratoDir);
+  let files: string[];
+  try {
+    files = (await readdir(dir)).filter((f) => f.endsWith(".session"));
+  } catch {
+    return { decks: {}, maxTs: 0, file: null, mtime: null };
+  }
+  const stated: Array<{ file: string; mtime: number }> = [];
+  for (const f of files) {
+    try {
+      const s = await stat(join(dir, f));
+      stated.push({ file: join(dir, f), mtime: s.mtimeMs });
+    } catch { /* skip */ }
+  }
+  stated.sort((a, b) => b.mtime - a.mtime); // newest first
+  for (let i = 0; i < Math.min(stated.length, 5); i++) {
+    const buf = await readFile(stated[i].file);
+    const entries = parseSessionEntries(buf);
+    if (!entries.length) continue;
+    const decks: Record<number, NowPlaying> = {};
+    let maxTs = 0;
+    for (const e of entries) {
+      const d = e.deck && e.deck >= 1 && e.deck <= 4 ? e.deck : 1;
+      e.sessionFile = stated[i].file;
+      if (!decks[d] || isMoreCurrent(e, decks[d])) decks[d] = e;
+      if ((e.startTime ?? 0) > maxTs) maxTs = e.startTime ?? 0;
+    }
+    return { decks, maxTs, file: stated[i].file, mtime: stated[i].mtime };
+  }
+  return { decks: {}, maxTs: 0, file: stated[0]?.file ?? null, mtime: stated[0]?.mtime ?? null };
+}
+
+/**
+ * Current per-deck state: the track currently loaded on each deck. Reads BOTH Serato sources and
+ * arbitrates by play recency — the reference app's key technique (`getLastPlayedTracks`): a leftover
+ * Serato-4 `master.sqlite` whose stale session would otherwise "pin the decks forever" loses to the
+ * fresher live `.session`, and vice-versa on a real Serato-4 install. Within a source, selection is
+ * by play start time, not file order (Serato re-writes finished entries in place). `sessionMtime` is
+ * reported as the latest PLAY time so a previous set (old plays) reads as stale on launch.
  */
 export async function getDecks(seratoDir = defaultSeratoDir()): Promise<DeckState> {
-  const session = await newestSession(seratoDir);
-  if (!session) return { decks: {}, activeDeck: null, sessionFile: null, sessionMtime: null };
-  const buf = await readFile(session);
-  const mtime = await stat(session).then((s) => s.mtimeMs).catch(() => null);
-  const entries = parseSessionEntries(buf);
-  const decks: Record<number, NowPlaying> = {};
+  const legacy = await readLegacyDecks(seratoDir);
+
+  // Only pay for the (large, possibly locked) master.sqlite read when it could plausibly be the
+  // fresher source — i.e. its file was touched around/after the legacy session. On a Serato-3 rig
+  // the V4 DB is old (or absent), so this stat gate skips it entirely.
+  let chosen = legacy;
+  try {
+    const dbPath = v4DatabasePath();
+    const vMtime = await stat(dbPath).then((s) => s.mtimeMs).catch(() => null);
+    if (vMtime != null && (legacy.mtime == null || vMtime >= legacy.mtime - 5 * 60 * 1000)) {
+      const v4 = await readV4Decks();
+      if (v4.maxTs > legacy.maxTs) chosen = { ...v4, mtime: vMtime };
+    }
+  } catch { /* V4 unavailable → keep legacy */ }
+
   let activeDeck: number | null = null;
   let activeEntry: NowPlaying | null = null;
-  for (const e of entries) {
-    const d = e.deck && e.deck >= 1 && e.deck <= 4 ? e.deck : 1;
-    e.sessionFile = session;
-    if (!decks[d] || isMoreCurrent(e, decks[d])) decks[d] = e;
-  }
-  for (const [d, e] of Object.entries(decks)) {
+  for (const [d, e] of Object.entries(chosen.decks)) {
     if (!activeEntry || isMoreCurrent(e, activeEntry)) {
       activeEntry = e;
       activeDeck = Number(d);
     }
   }
-  return { decks, activeDeck, sessionFile: session, sessionMtime: mtime };
+  // Freshness is the latest play time (more truthful than file mtime, which Serato bumps on
+  // re-writes). Fall back to file mtime when no play timestamp is present.
+  const sessionMtime = chosen.maxTs > 0 ? chosen.maxTs * 1000 : chosen.mtime;
+  return { decks: chosen.decks, activeDeck, sessionFile: chosen.file, sessionMtime };
 }

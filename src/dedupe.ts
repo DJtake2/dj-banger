@@ -22,6 +22,10 @@ const EDIT_MARKERS = [
   "quick hit", "quickhit", "quickhitter", "short", "snippet", "snip", "transition", "trans", "starter",
   "ending", "version", "ver", "mm edit", "mmedit", "dub edit", "club edit", "no tag", "notag",
   "hype", "loop", "extended mix", "radio edit", "main", "album version", "single version",
+  // record-pool arrangement tags — same song, marked by which section is exposed
+  "acc", "aca", "acc in", "acc out", "aca in", "aca out", "acapella in", "acapella out",
+  "verse", "verse in", "verse out", "hook", "hook in", "hook out", "chorus", "segue",
+  "in out", "quick hitter", "qh", "mmp", "billboard edit",
   // alternate productions of the same song — now collapsed too (per DJ feedback)
   "remix", "rmx", "bootleg", "flip", "vip", "refix", "rework", "live", "remaster", "remastered",
 ];
@@ -39,29 +43,44 @@ function isEditChunk(chunk: string): boolean {
   return editWordRe.test(chunk) && !keepWordRe.test(chunk);
 }
 
-/** Reduce a title to its base song identity. */
-export function normalizeTitle(title: string): string {
-  let s = (title ?? "").toLowerCase();
-
+/** Strip parenthetical/bracketed edit chunks and trailing " - <edit>" segments, keeping bare words. */
+function stripEditSegments(s: string): string {
   // Drop parenthetical / bracketed chunks that are pure edit markers, e.g. "(Intro - Dirty)".
   s = s.replace(/[([{][^)\]}]*[)\]}]/g, (m) => (isEditChunk(m) ? " " : m));
-
   // Drop trailing " - <edit descriptor>" segments, e.g. " - Kid Cut Up Kanye First Edit".
   const segs = s.split(/\s[-–—]\s/);
   if (segs.length > 1) {
     s = segs.filter((seg, i) => i === 0 || !isEditChunk(seg)).join(" - ");
   }
+  return s;
+}
 
-  // Remove any remaining bare edit-marker words (but not keep-markers).
-  s = s.replace(editWordRe, (m) => (keepWordRe.test(s) && keepWordRe.test(m) ? m : " "));
-
-  // Normalise punctuation/whitespace and common noise.
-  s = s
+/** Collapse featured credits + punctuation to a bare word sequence. */
+function tidy(s: string): string {
+  return s
     .replace(/\bfeat\.?\b|\bft\.?\b|\bfeaturing\b/g, " ")
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
+}
 
-  return s;
+/** Reduce a title to its base song identity. */
+export function normalizeTitle(title: string): string {
+  let s = (title ?? "").toLowerCase();
+  s = stripEditSegments(s);
+  // Remove any remaining bare edit-marker words (but not keep-markers).
+  s = s.replace(editWordRe, (m) => (keepWordRe.test(s) && keepWordRe.test(m) ? m : " "));
+  return tidy(s);
+}
+
+/**
+ * Looser identity: strip edit CHUNKS/segments but KEEP bare edit words. Used only as a fallback
+ * when the aggressive normalize empties the title — i.e. a song literally titled with an edit word
+ * ("Remix", "Instrumental"). Without this, "Remix (Clean)" and "Remix (MMP Intro Edit) (Dirty)"
+ * both collapse to "" under the aggressive rule, so the empty-fallback kept their full raw titles
+ * and they never de-duplicated. Keeping the bare word yields "remix" for both → one song.
+ */
+export function looseTitle(title: string): string {
+  return tidy(stripEditSegments((title ?? "").toLowerCase()));
 }
 
 /** Primary artist (drop featured/collab credits) for grouping. */
@@ -77,11 +96,15 @@ export function primaryArtist(artist: string): string {
 // several regexes, so caching turns a ~200ms/pass cost into a one-time computation.
 const keyCache = new WeakMap<Track, string>();
 
-/** Base song title (edit markers stripped), with an empty-safe fallback. */
+/** Base song title (edit markers stripped), with empty-safe fallbacks. */
 export function baseTitle(t: Track): string {
-  const title = normalizeTitle(t.title);
-  // If title normalises to empty (all markers), fall back to raw title so we don't over-merge.
-  return title || (t.title ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  // Aggressive first; if the title is all edit words it empties, so keep the bare word ("Remix");
+  // if even that empties, fall back to the raw title so we never over-merge unrelated songs.
+  return (
+    normalizeTitle(t.title) ||
+    looseTitle(t.title) ||
+    (t.title ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()
+  );
 }
 
 /** Stable identity for "the same song", used to collapse versions. */
