@@ -30,6 +30,10 @@ export interface NowPlaying {
   genre?: string;
   /** Serato deck this was played on (adat field 31): 1, 2, 3, 4. */
   deck?: number;
+  /** Unix time (s) the track started playing (adat field 28). */
+  startTime?: number;
+  /** Unix time (s) the track stopped (adat field 29). Absent while it's still playing. */
+  endTime?: number;
   /** Which session file + entry index it came from. */
   sessionFile: string;
   entryIndex: number;
@@ -138,6 +142,8 @@ function parseSessionEntries(buf: Buffer): NowPlaying[] {
               album: fieldStr(fields, 8),
               genre: fieldStr(fields, 9),
               deck: fieldInt(fields, 31),
+              startTime: fieldInt(fields, 28),
+              endTime: fieldInt(fields, 29),
               sessionFile: "",
               entryIndex: idx,
             });
@@ -170,25 +176,53 @@ export interface DeckState {
   /** The deck of the overall-most-recent entry (the "active"/incoming deck). */
   activeDeck: number | null;
   sessionFile: string | null;
+  /** Last-modified time (ms) of the session file — used to tell a live set from a stale one. */
+  sessionMtime: number | null;
 }
 
 /**
- * Current per-deck state: the latest track on each deck (Serato logs each play with its deck
- * in adat field 31). Entries without a deck number fall back to deck 1.
+ * Order two entries by recency. Serato does NOT keep the file in play order — it re-writes older
+ * entries in place (updating their "last modified" field) long after they played, so file byte
+ * order (entryIndex) puts stale re-written tracks last and would report the wrong now-playing.
+ * The play START time (field 28) is the reliable clock: the largest start time is the most
+ * recently loaded track. An entry with no END time (field 29) is still playing, so it always
+ * outranks a finished one. Returns true if `a` is newer/more-current than `b`.
+ */
+function isMoreCurrent(a: NowPlaying, b: NowPlaying): boolean {
+  const aPlaying = a.endTime == null;
+  const bPlaying = b.endTime == null;
+  if (aPlaying !== bPlaying) return aPlaying; // a still playing, b finished → a wins
+  const as = a.startTime ?? 0;
+  const bs = b.startTime ?? 0;
+  if (as !== bs) return as > bs;
+  return a.entryIndex > b.entryIndex; // no timestamps → fall back to file order
+}
+
+/**
+ * Current per-deck state: the track currently loaded on each deck (Serato logs each play with its
+ * deck in adat field 31). Entries without a deck number fall back to deck 1. Selection is by play
+ * start time, not file order — see `isMoreCurrent`. The active/incoming deck is the one whose
+ * current track is the most recent overall.
  */
 export async function getDecks(seratoDir = defaultSeratoDir()): Promise<DeckState> {
   const session = await newestSession(seratoDir);
-  if (!session) return { decks: {}, activeDeck: null, sessionFile: null };
+  if (!session) return { decks: {}, activeDeck: null, sessionFile: null, sessionMtime: null };
   const buf = await readFile(session);
+  const mtime = await stat(session).then((s) => s.mtimeMs).catch(() => null);
   const entries = parseSessionEntries(buf);
   const decks: Record<number, NowPlaying> = {};
   let activeDeck: number | null = null;
-  // entries are oldest→newest; last write per deck wins, last overall = active.
+  let activeEntry: NowPlaying | null = null;
   for (const e of entries) {
     const d = e.deck && e.deck >= 1 && e.deck <= 4 ? e.deck : 1;
     e.sessionFile = session;
-    decks[d] = e;
-    activeDeck = d;
+    if (!decks[d] || isMoreCurrent(e, decks[d])) decks[d] = e;
   }
-  return { decks, activeDeck, sessionFile: session };
+  for (const [d, e] of Object.entries(decks)) {
+    if (!activeEntry || isMoreCurrent(e, activeEntry)) {
+      activeEntry = e;
+      activeDeck = Number(d);
+    }
+  }
+  return { decks, activeDeck, sessionFile: session, sessionMtime: mtime };
 }

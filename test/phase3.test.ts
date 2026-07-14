@@ -3,7 +3,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { normalizeTitle, primaryArtist, songKey, collapseVersions } from "../src/dedupe.ts";
+import { normalizeTitle, primaryArtist, songKey, collapseVersions, sameSong } from "../src/dedupe.ts";
 import { parseFfmpegStats, energyFromFeatures } from "../src/analysis/analyze.ts";
 import { recommend } from "../src/engine.ts";
 import { parseKey } from "../src/camelot.ts";
@@ -18,9 +18,13 @@ test("normalizeTitle strips edit markers", () => {
   assert.equal(normalizeTitle("Blessings - Quick Hit Edit"), base);
 });
 
-test("normalizeTitle keeps remix/bootleg as distinct identity", () => {
-  assert.notEqual(normalizeTitle("Blessings Remix"), normalizeTitle("Blessings"));
-  assert.notEqual(normalizeTitle("Song (Joel Corry Bootleg)"), normalizeTitle("Song"));
+test("normalizeTitle collapses remixes/bootlegs, keeps mashups/covers distinct", () => {
+  // alternate productions of the same song now collapse
+  assert.equal(normalizeTitle("Blessings Remix"), normalizeTitle("Blessings"));
+  assert.equal(normalizeTitle("Song (Joel Corry Bootleg)"), normalizeTitle("Song"));
+  // genuinely different tracks stay separate
+  assert.notEqual(normalizeTitle("Song (Cover)"), normalizeTitle("Song"));
+  assert.notEqual(normalizeTitle("Song A x Song B (Mashup)"), normalizeTitle("Song A"));
 });
 
 test("primaryArtist drops features/collabs", () => {
@@ -28,13 +32,13 @@ test("primaryArtist drops features/collabs", () => {
   assert.equal(primaryArtist("Calvin Harris & Dua Lipa"), "calvin harris");
 });
 
-test("songKey groups versions, separates remixes", () => {
+test("songKey groups all versions of a song incl. remixes", () => {
   const mk = (title: string, artist = "Big Sean ft. Drake"): Track => ({ id: title, absPath: "/" + title, title, artist });
   const k1 = songKey(mk("Blessings (Intro - Dirty)"));
   const k2 = songKey(mk("Blessings (Clean)"));
   const k3 = songKey(mk("Blessings Remix (Dirty)", "Big Sean ft. Drake & Kanye West"));
   assert.equal(k1, k2); // same song, different edits
-  assert.notEqual(k1, k3); // remix is its own thing
+  assert.equal(k1, k3); // a remix of the same song now collapses too (one suggestion per song)
 });
 
 test("collapseVersions keeps best (first) per song", () => {
@@ -46,6 +50,19 @@ test("collapseVersions keeps best (first) per song", () => {
   const kept = collapseVersions(items);
   assert.equal(kept.length, 2);
   assert.equal(kept[0].track.id, "a1"); // first of the group survives
+});
+
+// Regression: record pools tag the same act inconsistently ("Waka Flocka Flame" vs
+// "Waka Flocka", featured credits reordered/dropped). Exact-artist matching left the
+// currently-playing song's other edit in the suggestions (the "same song suggested" bug).
+test("sameSong / collapseVersions tolerate inconsistent artist tags", () => {
+  const a: Track = { id: "a", absPath: "/a", title: "No Hands (Mike D Remix) (Clean)", artist: "Waka Flocka Flame Feat Wale and Roscoe Dash" };
+  const b: Track = { id: "b", absPath: "/b", title: "No Hands (CLEAN)", artist: "Waka Flocka ft Roscoe Dash, Wale" };
+  const c: Track = { id: "c", absPath: "/c", title: "No Hands", artist: "Lil Baby" }; // same title, different act
+  assert.ok(sameSong(a, b), "artist-tag variants of one song match");
+  assert.ok(!sameSong(a, c), "same title by a different act stays distinct");
+  const kept = collapseVersions([a, b, c].map((track) => ({ track, score: 1 })));
+  assert.deepEqual(kept.map((k) => k.track.id), ["a", "c"]); // b collapses into a
 });
 
 // ---- engine de-dupe end to end ---------------------------------------------

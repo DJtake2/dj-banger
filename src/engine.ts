@@ -9,7 +9,7 @@
 import type { Track, EngineConfig, Suggestion, MixContext } from "./types.ts";
 import { DEFAULT_CONFIG } from "./types.ts";
 import { keyCompatibility, keyRelation } from "./camelot.ts";
-import { songKey, collapseVersions } from "./dedupe.ts";
+import { sameSong, collapseVersions } from "./dedupe.ts";
 
 /** Score BPM proximity 0..1, honouring tolerance and optional half/double-time. */
 export function bpmScore(seedBpm: number | undefined, candBpm: number | undefined, cfg: EngineConfig): {
@@ -48,30 +48,67 @@ export function energyScore(seedE: number | undefined, candE: number | undefined
   if (seedE == null || candE == null) return { score: 0.4, note: "Energy unknown" };
   const delta = candE - seedE;
 
-  // Base: closeness. A delta of 0 is 1.0, each step away costs ~0.18.
-  let score = Math.max(0, 1 - Math.abs(delta) * 0.18);
-
-  // Trajectory bias: reward moves in the intended direction, softly.
-  if (cfg.energyDirection === "build" && delta > 0) score = Math.min(1, score + 0.12 * Math.min(delta, 2));
-  if (cfg.energyDirection === "cool" && delta < 0) score = Math.min(1, score + 0.12 * Math.min(-delta, 2));
-  // Penalise wrong-direction jumps when a direction is set.
-  if (cfg.energyDirection === "build" && delta < -1) score *= 0.7;
-  if (cfg.energyDirection === "cool" && delta > 1) score *= 0.7;
+  // The trajectory decides what "good energy" means, strongly enough to visibly reorder picks:
+  //   flat  → closest energy wins    build → higher energy wins    cool → lower energy wins
+  const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
+  let score: number;
+  if (cfg.energyDirection === "build") score = clamp01(0.5 + 0.25 * delta);      // +2 → 1.0, −2 → 0
+  else if (cfg.energyDirection === "cool") score = clamp01(0.5 - 0.25 * delta);  // −2 → 1.0, +2 → 0
+  else score = Math.max(0, 1 - Math.abs(delta) * 0.18);                          // flat: closeness
 
   const sign = delta > 0 ? "+" : "";
   const note = delta === 0 ? "Same energy" : `Energy ${sign}${delta}`;
   return { score, note };
 }
 
-/** Genre affinity 0..1 — exact match, shared token, or unrelated. */
+// Families of genres DJs treat as adjacent. Two genres in the same cluster are "closely
+// related" even when they share no word (e.g. "Hip Hop" ↔ "Rap", "House" ↔ "Techno").
+const GENRE_CLUSTERS: string[][] = [
+  ["hip hop", "hiphop", "rap", "trap", "drill", "grime"],
+  ["r&b", "rnb", "r and b", "soul", "neo soul", "funk"],
+  ["house", "tech house", "deep house", "progressive house", "electro house", "future house", "bass house", "afro house"],
+  ["techno", "minimal", "tech", "electro"],
+  ["trance", "psytrance", "hardstyle"],
+  ["dubstep", "riddim", "bass", "drum and bass", "dnb", "d&b", "jungle", "breaks"],
+  ["edm", "dance", "big room", "future bass", "electropop"],
+  ["pop", "dance pop", "indie pop"],
+  ["reggaeton", "latin", "dembow", "moombahton", "salsa", "bachata", "regional mexican", "mexican",
+    "corrido", "corridos", "corridos tumbados", "sierreño", "sierreno", "banda", "cumbia", "merengue",
+    "mariachi", "ranchera", "norteño", "norteno", "vallenato", "bolero", "tejano", "latin pop",
+    "latin trap", "urbano", "urbano latino", "flamenco", "español", "espanol", "spanish"],
+  ["afrobeats", "afrobeat", "amapiano"],
+  ["disco", "nu-disco", "nu disco", "boogie"],
+  ["reggae", "dancehall", "soca"],
+];
+const GENRE_CLUSTER_OF = new Map<string, number>();
+GENRE_CLUSTERS.forEach((c, i) => c.forEach((g) => GENRE_CLUSTER_OF.set(g, i)));
+
+/** Genre affinity 0..1 — exact match, same family, shared word, or unrelated. */
 export function genreScore(a: string | undefined, b: string | undefined): number {
-  if (!a || !b) return 0.5;
+  if (!a || !b) return 0.5; // unknown genre → neutral, never penalised
   const na = a.toLowerCase().trim();
   const nb = b.toLowerCase().trim();
   if (na === nb) return 1;
+  // Same curated family (handles sub-genres and synonyms across different words).
+  const ca = GENRE_CLUSTER_OF.get(na);
+  const cb = GENRE_CLUSTER_OF.get(nb);
+  if (ca != null && ca === cb) return 0.85;
+  // Shared word (e.g. "Deep House" ↔ "Bass House" both have "house").
   const ta = new Set(na.split(/[\s/&,-]+/).filter(Boolean));
   const tb = nb.split(/[\s/&,-]+/).filter(Boolean);
-  return tb.some((t) => ta.has(t)) ? 0.75 : 0.35;
+  if (tb.some((t) => ta.has(t))) return 0.8;
+  return 0.3; // different style → soft down-rank
+}
+
+// Spanish/Latin detection — from genre tags OR Spanish orthography (ñ, ¿¡, accented vowels). Lets a
+// Spanish song keep suggesting Spanish music even when genre tags are missing or inconsistent, while
+// still allowing variety across Latin sub-genres. Extensible to other locales later.
+const LATIN_GENRE_RE = /regg?aeton|latin|bachata|salsa|merengue|cumbia|banda|corrido|mexican|dembow|mariachi|ranchera|norte|vallenato|bolero|tejano|urbano|flamenco|espa|spanish|sierre/i;
+const SPANISH_ORTHO_RE = /[ñ¿¡]/i;
+export function trackLocale(t: { genre?: string; title?: string; artist?: string }): string {
+  if (LATIN_GENRE_RE.test(t.genre || "")) return "es";
+  if (SPANISH_ORTHO_RE.test(`${t.title || ""} ${t.artist || ""}`)) return "es";
+  return "";
 }
 
 /**
@@ -86,8 +123,12 @@ export function recommend(
   const cfg: EngineConfig = { ...DEFAULT_CONFIG, ...config, weights: { ...DEFAULT_CONFIG.weights, ...config.weights } };
   const { seed } = ctx;
   const played = ctx.playedIds ?? new Set<string>();
-  const wsum = cfg.weights.key + cfg.weights.bpm + cfg.weights.energy + cfg.weights.genre || 1;
-  const seedSong = cfg.excludeSeedVersions ? songKey(seed) : null;
+  // When the seed has NO genre tag, we can't score genre — shift that weight onto artist affinity
+  // (closely-related artists) so a genre-less track still gets a strongly-related next pick.
+  const w = { ...cfg.weights };
+  if (!seed.genre) { w.artist += w.genre; w.genre = 0; }
+  const wsum = w.key + w.bpm + w.energy + w.genre + w.artist || 1;
+  const seedLocale = trackLocale(seed); // e.g. "es" → keep suggesting same-language music
 
   const out: Suggestion[] = [];
   for (const t of pool) {
@@ -95,19 +136,38 @@ export function recommend(
     if (played.has(t.id)) continue;
     if (ctx.candidatePoolIds && !ctx.candidatePoolIds.has(t.id)) continue;
     // Skip other edits of the song that's already playing.
-    if (seedSong && songKey(t) === seedSong) continue;
+    if (cfg.excludeSeedVersions && sameSong(seed, t)) continue;
 
     const kScore = keyCompatibility(seed.key, t.key);
     const b = bpmScore(seed.bpm, t.bpm, cfg);
     const e = energyScore(seed.energy, t.energy, cfg);
-    const gScore = genreScore(seed.genre, t.genre);
+    let gScore = genreScore(seed.genre, t.genre);
+    // Same-language boost: a Spanish seed should keep surfacing Spanish music (across Latin
+    // sub-genres) even when genre tags differ. Only boosts a match — never penalizes unknowns.
+    if (seedLocale && trackLocale(t) === seedLocale) gScore = Math.max(gScore, 0.9);
+    // Artist affinity: do the seed's and candidate's artists get mixed together? Neutral (0.5)
+    // when no scorer is wired or the pair has never been played near each other.
+    const aScore = cfg.artistAffinity ? cfg.artistAffinity(seed.artist, t.artist) : 0.5;
 
     let score =
-      (cfg.weights.key * kScore +
-        cfg.weights.bpm * b.score +
-        cfg.weights.energy * e.score +
-        cfg.weights.genre * gScore) /
+      (w.key * kScore +
+        w.bpm * b.score +
+        w.energy * e.score +
+        w.genre * gScore +
+        w.artist * aScore) /
       wsum;
+
+    // "Stay in the lane" — the reference app strongly favors the same genre-family / language, so
+    // a related pick leads even over a key/BPM-perfect track from a different style. gScore already
+    // folds in genre-family + Spanish-locale; a strongly-related ARTIST also counts as in-lane.
+    // Multiplier: in-lane → up to ×1.30, off-lane (different style) → down to ~×0.55.
+    const lane = Math.max(gScore, aScore >= 0.75 ? aScore : 0);
+    score *= 0.55 + 0.75 * lane;
+
+    // World popularity (Deezer global rank, 0..1) — a big factor, like the reference API: a
+    // crowd-pleasing hit outranks a deep cut when both fit. Neutral (no effect) when unknown.
+    const pop = typeof t.popularity === "number" ? t.popularity : 0.5;
+    score *= 0.78 + 0.44 * pop; // pop 1 → ×1.22, unknown → ×1.0, obscure → ×0.78
 
     // Soft penalty for repeating the seed's artist (avoid three Drake tracks in a row).
     if (cfg.sameArtistPenalty > 0 && t.artist && seed.artist && t.artist.toLowerCase() === seed.artist.toLowerCase()) {
@@ -115,12 +175,16 @@ export function recommend(
     }
 
     const reasons = [keyRelation(seed.key, t.key), b.note, e.note];
-    if (gScore === 1 && t.genre) reasons.push(t.genre);
+    if (gScore >= 0.8 && t.genre) reasons.push(t.genre);
+    // Flag a strong artist connection (you regularly mix these two together).
+    if (aScore >= 0.7 && t.artist && seed.artist && t.artist.toLowerCase() !== seed.artist.toLowerCase()) {
+      reasons.push(`Pairs with ${seed.artist}`);
+    }
 
     out.push({
       track: t,
       score,
-      breakdown: { key: kScore, bpm: b.score, energy: e.score, genre: gScore },
+      breakdown: { key: kScore, bpm: b.score, energy: e.score, genre: gScore, artist: aScore },
       reasons,
     });
   }

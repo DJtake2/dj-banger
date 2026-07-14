@@ -17,7 +17,15 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["macos-private-api"] }
 # Drag a real file OUT of the window into Serato (native OS drag-and-drop).
 tauri-plugin-drag = "2"
+# The underlying drag engine — driven directly from our own command (the plugin's JS
+# API is not bundled into the webview), so pin it to the same version the plugin resolves.
+drag = "2.1.1"
 # Self-update from GitHub Releases.
 tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Keep unwinding on in release so catch_unwind can contain the objc2 nil-drag-session panic
+# (a nil NSDraggingSession would otherwise abort the whole app). See start_file_drag.
+[profile.release]
+panic = "unwind"

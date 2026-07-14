@@ -49,6 +49,8 @@ export interface StreamingTrack {
   title: string;
   artist: string;
   spotifyUrl?: string;
+  /** Album cover art URL from Spotify (small size), for the "song pictures" thumbnail. */
+  image?: string;
   /** true if a same-title+artist track exists in the user's library. */
   owned: boolean;
   /** The matched library track (carries key/BPM/energy) when owned — Spotify can't give a new
@@ -128,7 +130,7 @@ export async function spotifyCharts(library: Track[]): Promise<Chart[]> {
   for (const chart of CHART_PLAYLISTS) {
     try {
       const data = await api(
-        `/playlists/${chart.id}/tracks?limit=50&fields=${encodeURIComponent("items(track(name,artists(name),external_urls))")}`,
+        `/playlists/${chart.id}/tracks?limit=50&fields=${encodeURIComponent("items(track(name,artists(name),external_urls,album(images)))")}`,
         tok,
       );
       const tracks: StreamingTrack[] = [];
@@ -141,7 +143,8 @@ export async function spotifyCharts(library: Track[]): Promise<Chart[]> {
         if (seen.has(key)) continue;
         seen.add(key);
         const ownedTrack = owned.get(key);
-        tracks.push({ title: tr.name, artist: primary, spotifyUrl: tr.external_urls?.spotify, owned: !!ownedTrack, ownedTrack });
+        const imgs = tr.album?.images ?? [];
+        tracks.push({ title: tr.name, artist: primary, spotifyUrl: tr.external_urls?.spotify, image: (imgs[imgs.length - 1] ?? imgs[0])?.url, owned: !!ownedTrack, ownedTrack });
       }
       if (tracks.length) out.push({ name: chart.name, tracks });
     } catch {
@@ -151,58 +154,150 @@ export async function spotifyCharts(library: Track[]): Promise<Chart[]> {
   return out;
 }
 
+/** A raw Spotify track item reduced to what we care about. */
+interface Cand {
+  title: string;
+  primary: string;
+  key: string;       // normalized artist|title identity
+  artistKey: string; // normalized primary artist, for per-artist capping
+  url?: string;
+  image?: string;
+  /** Priority tier: lower = surfaced first. 0 = related/genre (variety), 1 = seed artist. */
+  tier: number;
+}
+
+/** Genre tags that carry no useful search signal (pool/label noise), so we skip genre search. */
+const NOISE_GENRE = new Set(["", "other", "misc", "unknown", "club", "clean", "dirty", "explicit", "n/a", "none"]);
+
+/** Run one Spotify track search (new apps are capped at limit=10). Returns raw items, never throws. */
+async function searchTracks(term: string, tok: string): Promise<any[]> {
+  try {
+    const d = await api(`/search?type=track&limit=10&q=${encodeURIComponent(term)}`, tok);
+    return d?.tracks?.items ?? [];
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Discovery tracks for a seed. Returns [] (not connected) when no creds.
- * Uses artist search → artist top-tracks + related-artists' top-tracks.
+ *
+ * ⚠️ Spotify locked down top-tracks, related-artists AND recommendations for new apps (all 403/404
+ * now) — only catalog **Search** works with client-credentials. A naive search on the seed's own
+ * artist just returns that one artist's catalog ("same artist, different song"). To get real
+ * versatility we build a small artist graph from what Search gives us:
+ *   1. Search the seed artist — this yields their tracks AND the artists they collaborate with.
+ *   2. Search each of those collaborators — musically-adjacent but DIFFERENT artists.
+ *   3. Optionally search the seed's genre — other artists in the same lane.
+ * We then cap how many tracks any single artist (especially the seed's own) can contribute and
+ * interleave the artists, so the list is a spread of related acts rather than one artist repeated.
  */
-export async function streamingRecommend(seed: { title: string; artist: string }, library: Track[]): Promise<StreamingTrack[]> {
+export async function streamingRecommend(
+  seed: { title: string; artist: string; genre?: string },
+  library: Track[],
+): Promise<StreamingTrack[]> {
   const tok = await getToken();
   if (!tok) return []; // not connected
 
-  const owned = buildOwnedIndex(library);
-  const out: StreamingTrack[] = [];
-  const seenKey = new Set<string>();
-
   const artistName = (seed.artist || "").split(/,|&|feat\.?|ft\.?/i)[0].trim();
   if (!artistName) return [];
+  const seedKey = `${normalize(seed.artist)}|${normalize(seed.title)}`;
+  const seedArtistKey = normalize(artistName);
 
-  // 1) find the primary artist
-  const search = await api(`/search?type=artist&limit=1&q=${encodeURIComponent(artistName)}`, tok);
-  const artist = search?.artists?.items?.[0];
-  if (!artist) return [];
-
-  const artistIds = [artist.id];
-  // 2) related artists (may be restricted → guard)
-  try {
-    const rel = await api(`/artists/${artist.id}/related-artists`, tok);
-    for (const a of (rel?.artists ?? []).slice(0, 4)) artistIds.push(a.id);
-  } catch {
-    /* related-artists may be unavailable; continue with just the seed artist */
-  }
-
-  // 3) top tracks per artist
-  for (const aid of artistIds) {
-    let top;
-    try {
-      top = await api(`/artists/${aid}/top-tracks?market=US`, tok);
-    } catch {
-      continue;
+  // 1. Seed-artist search → seed tracks + the collaborators to branch out to. Rank collaborators
+  // by how often they co-appear across the seed's results: a genuine frequent collaborator beats a
+  // one-off credit (e.g. an event/label entity like "NFL" tagged on a single track).
+  const seedItems = await searchTracks(artistName, tok);
+  const nb = new Map<string, { name: string; count: number }>();
+  for (const tr of seedItems) {
+    for (const a of (tr.artists ?? []).slice(0, 4) as Array<{ name?: string }>) {
+      const name = (a?.name || "").trim();
+      const ak = normalize(name);
+      if (!name || ak === seedArtistKey) continue;
+      const cur = nb.get(ak);
+      if (cur) cur.count++;
+      else nb.set(ak, { name, count: 1 });
     }
-    for (const tr of (top?.tracks ?? []).slice(0, 5)) {
-      const title = tr.name as string;
-      const primary = (tr.artists?.[0]?.name as string) ?? "";
+  }
+  const neighbors = [...nb.entries()]
+    .sort((a, b) => b[1].count - a[1].count)
+    .slice(0, 4)
+    .map(([ak, v]) => ({ artistKey: ak, name: v.name }));
+
+  // 2. + 3. Branch out to collaborators and (if meaningful) the seed's genre, in parallel.
+  const genre = (seed.genre || "").toLowerCase().split(/[|/,]/)[0].trim();
+  const genreTerm = genre && !NOISE_GENRE.has(genre) ? genre : null;
+  const branchTerms = [
+    ...neighbors.map((n) => ({ term: n.name, artistKey: n.artistKey })), // artist branch
+    ...(genreTerm ? [{ term: genreTerm, artistKey: null as string | null }] : []), // genre branch
+  ];
+  const branchResults = await Promise.all(branchTerms.map((b) => searchTracks(b.term, tok)));
+
+  // Collect candidates: seed-artist tracks in tier 1, everything else (variety) in tier 0.
+  const cands: Cand[] = [];
+  const seenKey = new Set<string>();
+  // For an ARTIST branch, `mustCredit` = that artist's key: keep only tracks they're actually
+  // credited on, so a generic title-match (searching "NFL" → NFL theme songs) is discarded. A
+  // genre branch passes null → keep everything (that's the point, broad lane variety).
+  const collect = (items: any[], tier: number, mustCredit: string | null) => {
+    for (const tr of items) {
+      const title = tr?.name as string;
+      const primary = (tr?.artists?.[0]?.name as string) ?? "";
+      if (!title || !primary) continue;
+      if (mustCredit && !(tr.artists ?? []).some((a: { name?: string }) => normalize(a?.name || "") === mustCredit)) continue;
       const key = `${normalize(primary)}|${normalize(title)}`;
-      if (seenKey.has(key)) continue;
+      if (key === seedKey || seenKey.has(key)) continue;
       seenKey.add(key);
-      const ownedTrack = owned.get(key);
-      out.push({
+      const imgs = tr.album?.images ?? [];
+      cands.push({
         title,
-        artist: primary,
-        spotifyUrl: tr.external_urls?.spotify,
+        primary,
+        key,
+        artistKey: normalize(primary),
+        url: tr.external_urls?.spotify,
+        image: (imgs[imgs.length - 1] ?? imgs[0])?.url,
+        tier: tier,
+      });
+    }
+  };
+  collect(seedItems, 1, null);
+  branchResults.forEach((items, i) => collect(items, 0, branchTerms[i].artistKey));
+
+  // Bucket by artist so we can interleave and cap. Variety (tier 0) artists come before the seed
+  // artist, and each artist contributes at most PER_ARTIST_CAP tracks.
+  const PER_ARTIST_CAP = 2;
+  const buckets = new Map<string, Cand[]>();
+  for (const c of cands) {
+    const b = buckets.get(c.artistKey);
+    if (b) b.push(c);
+    else buckets.set(c.artistKey, [c]);
+  }
+  const orderedArtists = [...buckets.keys()].sort((a, b) => {
+    const ta = buckets.get(a)![0].tier;
+    const tb = buckets.get(b)![0].tier;
+    return ta - tb; // tier 0 (variety) first, seed artist (tier 1) last
+  });
+
+  // Round-robin across artists → alternate acts instead of grouping them.
+  const owned = buildOwnedIndex(library);
+  const out: StreamingTrack[] = [];
+  let took = true;
+  for (let round = 0; round < PER_ARTIST_CAP && took && out.length < 12; round++) {
+    took = false;
+    for (const ak of orderedArtists) {
+      if (out.length >= 12) break;
+      const c = buckets.get(ak)![round];
+      if (!c) continue;
+      took = true;
+      const ownedTrack = owned.get(c.key);
+      out.push({
+        title: c.title,
+        artist: c.primary,
+        spotifyUrl: c.url,
+        image: c.image,
         owned: !!ownedTrack,
         ownedTrack,
       });
-      if (out.length >= 12) return out;
     }
   }
   return out;

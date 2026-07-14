@@ -85,6 +85,11 @@ export async function startLiveLoop(opts: LiveOptions): Promise<LiveHandle> {
   const writeCrate = opts.writeCrate ?? true;
   const debounceMs = opts.debounceMs ?? 75;
   const pollMs = opts.pollMs ?? 2000;
+  // On launch Serato's newest history session may be from a PREVIOUS run/set — showing its last
+  // tracks looks like "now playing" but is stale. Only treat a session as live if it was written
+  // recently; otherwise the UI waits for the current set. fs.watch fires the moment a track loads,
+  // so nothing live is missed. Tunable via BANGER_FRESH_MIN (minutes).
+  const freshMs = (Number(process.env.BANGER_FRESH_MIN) || 20) * 60 * 1000;
   const analyzeSeedLive = opts.analyzeSeedLive ?? true;
   const log = opts.log ?? (() => {});
 
@@ -139,6 +144,13 @@ export async function startLiveLoop(opts: LiveOptions): Promise<LiveHandle> {
     try {
       const state = await getDecks(seratoDir);
       if (state.activeDeck == null) return;
+
+      // Skip a stale previous-session read on launch — wait for the live set instead of showing
+      // old tracks. (A fresh write flips mtime to ~now, so real activity always gets through.)
+      if (state.sessionMtime != null && Date.now() - state.sessionMtime > freshMs) {
+        if (lastSeedId !== "__stale__") { log("Serato history is stale; waiting for the current set"); lastSeedId = "__stale__"; }
+        return;
+      }
 
       // Composite key of all deck tracks → recompute when EITHER deck changes.
       const key = Object.entries(state.decks).map(([d, t]) => `${d}:${t.id}`).sort().join("|");

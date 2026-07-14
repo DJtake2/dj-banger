@@ -23,6 +23,8 @@ export interface Track {
   /** Track length in seconds, if known. */
   lengthSec?: number;
   year?: number;
+  /** World popularity 0..1 (from Deezer's global rank), attached at runtime. Undefined = unknown. */
+  popularity?: number;
   /** Raw source fields kept for debugging / future features. */
   raw?: Record<string, string | number>;
 }
@@ -48,8 +50,17 @@ export interface EngineConfig {
     bpm: number;
     energy: number;
     genre: number;
+    /** How much artist affinity (do these two artists get mixed together?) matters. */
+    artist: number;
   };
-  /** Max BPM difference (percent of seed BPM) still considered mixable. Default 6. */
+  /**
+   * Artist-affinity scorer 0..1 — "how related are these two artists?". Built from the DJ's
+   * own play history (artists they actually mix near each other). Not serialized; the bridge
+   * attaches it at runtime. Absent → the engine treats artist affinity as neutral (0.5).
+   */
+  artistAffinity?: (seedArtist?: string, candArtist?: string) => number;
+  /** Max BPM difference (percent of seed BPM) still considered mixable. Default 9 (wider, like the
+   *  reference app — closely-related tracks at a different tempo still surface, with a key/pitch shift). */
   bpmTolerancePct: number;
   /** Allow half/double-time matches (e.g. 140 <-> 70). Default true. */
   allowHalfDouble: boolean;
@@ -66,8 +77,13 @@ export interface EngineConfig {
 }
 
 export const DEFAULT_CONFIG: EngineConfig = {
-  weights: { key: 0.4, bpm: 0.3, energy: 0.2, genre: 0.1 },
-  bpmTolerancePct: 6,
+  // Key still leads (harmonic mixing is the core); genre + artist affinity together keep
+  // suggestions in the same lane (same/related style, artists you actually mix together).
+  // Tuned to match the reference app's live behavior: relatedness (genre + artist + language)
+  // leads, harmonic key stays strong, BPM is present but wider (it offers a key/pitch shift rather
+  // than hard-excluding a closely-related track at a different tempo).
+  weights: { key: 0.30, bpm: 0.17, energy: 0.13, genre: 0.20, artist: 0.20 },
+  bpmTolerancePct: 9,
   allowHalfDouble: true,
   energyDirection: "flat",
   sameArtistPenalty: 0.15,
@@ -87,6 +103,7 @@ export interface Suggestion {
     bpm: number;
     energy: number;
     genre: number;
+    artist: number;
   };
   /** Short human reasons, e.g. ["Perfect key (8A)", "+2 BPM", "Energy +1"]. */
   reasons: string[];
