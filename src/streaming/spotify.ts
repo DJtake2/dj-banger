@@ -180,6 +180,28 @@ async function searchTracks(term: string, tok: string): Promise<any[]> {
 }
 
 /**
+ * Deezer's related-artist neighborhood for an artist (free, no key). This is the "cultural
+ * association" the reference brain leads with — Camila Cabello → Dua Lipa / Selena Gomez — as
+ * opposed to "artists merely co-credited on this song". Returns display names (to search on
+ * Spotify). Empty on any failure so the caller can fall back.
+ */
+async function deezerRelatedArtists(artistName: string): Promise<string[]> {
+  try {
+    const s = await fetch(`https://api.deezer.com/search/artist?q=${encodeURIComponent(artistName)}&limit=1`, {
+      signal: AbortSignal.timeout(6000),
+    }).then((r) => r.json());
+    const id = s?.data?.[0]?.id;
+    if (!id) return [];
+    const rel = await fetch(`https://api.deezer.com/artist/${id}/related?limit=10`, {
+      signal: AbortSignal.timeout(6000),
+    }).then((r) => r.json());
+    return (rel?.data ?? []).map((a: { name?: string }) => (a?.name || "").trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Discovery tracks for a seed. Returns [] (not connected) when no creds.
  *
  * ⚠️ Spotify locked down top-tracks, related-artists AND recommendations for new apps (all 403/404
@@ -204,33 +226,40 @@ export async function streamingRecommend(
   const seedKey = `${normalize(seed.artist)}|${normalize(seed.title)}`;
   const seedArtistKey = normalize(artistName);
 
-  // 1. Seed-artist search → seed tracks + the collaborators to branch out to. Rank collaborators
-  // by how often they co-appear across the seed's results: a genuine frequent collaborator beats a
-  // one-off credit (e.g. an event/label entity like "NFL" tagged on a single track).
-  const seedItems = await searchTracks(artistName, tok);
-  const nb = new Map<string, { name: string; count: number }>();
-  for (const tr of seedItems) {
-    for (const a of (tr.artists ?? []).slice(0, 4) as Array<{ name?: string }>) {
-      const name = (a?.name || "").trim();
-      const ak = normalize(name);
-      if (!name || ak === seedArtistKey) continue;
-      const cur = nb.get(ak);
-      if (cur) cur.count++;
-      else nb.set(ak, { name, count: 1 });
-    }
-  }
-  const neighbors = [...nb.entries()]
-    .sort((a, b) => b[1].count - a[1].count)
-    .slice(0, 4)
-    .map(([ak, v]) => ({ artistKey: ak, name: v.name }));
+  // 1. The seed artist's own tracks (tier 1 = "more from this artist"), plus the neighborhood to
+  // branch into. Neighborhood comes from Deezer's related-artists (vibe-first, like the reference
+  // brain), NOT from who's merely co-credited on the seed's tracks.
+  const [seedItems, deezerNames] = await Promise.all([
+    searchTracks(artistName, tok),
+    deezerRelatedArtists(artistName),
+  ]);
+  let neighbors = deezerNames
+    .map((name) => ({ artistKey: normalize(name), name }))
+    .filter((n) => n.artistKey && n.artistKey !== seedArtistKey)
+    .slice(0, 5);
 
-  // 2. + 3. Branch out to collaborators and (if meaningful) the seed's genre, in parallel.
-  const genre = (seed.genre || "").toLowerCase().split(/[|/,]/)[0].trim();
-  const genreTerm = genre && !NOISE_GENRE.has(genre) ? genre : null;
-  const branchTerms = [
-    ...neighbors.map((n) => ({ term: n.name, artistKey: n.artistKey })), // artist branch
-    ...(genreTerm ? [{ term: genreTerm, artistKey: null as string | null }] : []), // genre branch
-  ];
+  // Fallback (Deezer unavailable / unknown artist): the artists co-credited across the seed's own
+  // Spotify results, ranked by how often they co-appear (a real collaborator beats a one-off credit).
+  if (!neighbors.length) {
+    const nb = new Map<string, { name: string; count: number }>();
+    for (const tr of seedItems) {
+      for (const a of (tr.artists ?? []).slice(0, 4) as Array<{ name?: string }>) {
+        const name = (a?.name || "").trim();
+        const ak = normalize(name);
+        if (!name || ak === seedArtistKey) continue;
+        const cur = nb.get(ak);
+        if (cur) cur.count++;
+        else nb.set(ak, { name, count: 1 });
+      }
+    }
+    neighbors = [...nb.entries()].sort((a, b) => b[1].count - a[1].count).slice(0, 4).map(([ak, v]) => ({ artistKey: ak, name: v.name }));
+  }
+
+  // 2. Branch out to each neighbor artist on Spotify. We deliberately DON'T do a raw genre search:
+  // Spotify's search on a bare genre word ("pop", "hip hop") returns literal title matches
+  // ("Pop Out", "Hip Hop Hooray") and off-era tracks that break the vibe — the Deezer neighborhood
+  // is a far cleaner candidate source.
+  const branchTerms = neighbors.map((n) => ({ term: n.name, artistKey: n.artistKey as string | null }));
   const branchResults = await Promise.all(branchTerms.map((b) => searchTracks(b.term, tok)));
 
   // Collect candidates: seed-artist tracks in tier 1, everything else (variety) in tier 0.
