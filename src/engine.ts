@@ -198,7 +198,9 @@ export function recommend(
   const floor = out.length ? out[0].score * cfg.minScoreRatio : 0;
   const kept: Suggestion[] = [];
   for (const item of out) {
-    if (item.score < floor) break;
+    // Stop once we're past the floor — UNLESS we haven't hit the minimum yet (a very sparse seed
+    // still gets a few options rather than a lone result).
+    if (item.score < floor && kept.length >= cfg.minResults) break;
     if (cfg.dedupeVersions && kept.some((k) => sameSong(k.track, item.track))) continue;
     kept.push(item);
     if (kept.length >= cfg.limit) break;

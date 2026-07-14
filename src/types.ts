@@ -75,9 +75,14 @@ export interface EngineConfig {
   /**
    * Only return picks scoring at least this fraction of the top pick's score (0..1). Produces a
    * VARIABLE result count — a seed with only a few strong matches yields a short list instead of
-   * padding out to `limit` with weak, barely-related tracks. Default 0.72; set 0 to always fill.
+   * padding out to `limit` with weak, barely-related tracks. Default 0.82; set 0 to always fill.
    */
   minScoreRatio: number;
+  /**
+   * Always return at least this many picks (if that many exist), even when fewer clear the score
+   * floor — so a very sparse seed still shows a handful of options rather than a lone result.
+   */
+  minResults: number;
   /** Maximum number of suggestions to return (the list can be shorter — see minScoreRatio). */
   limit: number;
 }
@@ -95,7 +100,8 @@ export const DEFAULT_CONFIG: EngineConfig = {
   sameArtistPenalty: 0.15,
   dedupeVersions: true,
   excludeSeedVersions: true,
-  minScoreRatio: 0.72,
+  minScoreRatio: 0.82,
+  minResults: 4,
   limit: 12,
 };
 
