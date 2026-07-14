@@ -72,7 +72,13 @@ export interface EngineConfig {
   dedupeVersions: boolean;
   /** Exclude other edits of the seed's own song from suggestions. Default true. */
   excludeSeedVersions: boolean;
-  /** How many suggestions to return. */
+  /**
+   * Only return picks scoring at least this fraction of the top pick's score (0..1). Produces a
+   * VARIABLE result count — a seed with only a few strong matches yields a short list instead of
+   * padding out to `limit` with weak, barely-related tracks. Default 0.72; set 0 to always fill.
+   */
+  minScoreRatio: number;
+  /** Maximum number of suggestions to return (the list can be shorter — see minScoreRatio). */
   limit: number;
 }
 
@@ -89,6 +95,7 @@ export const DEFAULT_CONFIG: EngineConfig = {
   sameArtistPenalty: 0.15,
   dedupeVersions: true,
   excludeSeedVersions: true,
+  minScoreRatio: 0.72,
   limit: 12,
 };
 

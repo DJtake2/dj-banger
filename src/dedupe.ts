@@ -50,10 +50,16 @@ function stripBracketChunks(s: string): string {
   return s.replace(/[([{][^)\]}]*[)\]}]/g, (m) => (keepWordRe.test(m) ? m : " "));
 }
 
-/** Drop trailing " - <edit descriptor>" segments, e.g. " - Kid Cut Up Kanye First Edit". */
+// A trailing segment that's just a Camelot key ("6A"), a BPM ("128" / "128 bpm"), or a BPM range
+// ("100-124") — record pools append these; they're pure noise for song identity.
+const keyBpmChunkRe = /^\s*(\d{1,2}[ab]|\d{2,3}(\s*bpm)?|\d{2,3}\s*-\s*\d{2,3}(\s*bpm)?)\s*$/i;
+
+/** Drop trailing " - <edit / key / bpm descriptor>" segments, e.g. " - First Edit", " - 6A", " - 128". */
 function stripTrailingEditSegments(s: string): string {
   const segs = s.split(/\s[-–—]\s/);
-  return segs.length > 1 ? segs.filter((seg, i) => i === 0 || !isEditChunk(seg)).join(" - ") : s;
+  return segs.length > 1
+    ? segs.filter((seg, i) => i === 0 || !(isEditChunk(seg) || keyBpmChunkRe.test(seg))).join(" - ")
+    : s;
 }
 
 /** Collapse featured credits + punctuation to a bare word sequence. */
@@ -135,11 +141,41 @@ export function sameArtist(a: string, b: string): boolean {
   return small.every((w) => bigSet.has(w));
 }
 
-/** True if two tracks are the same underlying song (same base title + same primary act). */
+/** Levenshtein edit distance. */
+function levenshtein(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  if (!m) return n;
+  if (!n) return m;
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const cur = [i];
+    for (let j = 1; j <= n; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return prev[n];
+}
+
+/**
+ * True if two base titles are "the same song" title — tolerant of spelling variants
+ * ("Daisy Dukes" ↔ "Dazzey Duks") and part-in-parens vs inline ("Whoomp" ↔ "Whoomp There It Is").
+ * Only fuzzy on titles ≥6 chars — short titles ("Love" vs "Live") demand an exact match, since a
+ * one-edit difference there is usually a different song. Callers gate this on same artist first, so
+ * a loose match here means "same act, near-identical title" = the same record.
+ */
+export function titleSimilar(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const min = Math.min(a.length, b.length);
+  if (min < 6) return false; // too short to fuzzy-match safely
+  if (a.includes(b) || b.includes(a)) return true; // one is contained in the other
+  return 1 - levenshtein(a, b) / Math.max(a.length, b.length) >= 0.62;
+}
+
+/** True if two tracks are the same underlying song (same primary act + near-identical title). */
 export function sameSong(a: Track, b: Track): boolean {
-  const ba = baseTitle(a);
-  if (!ba || ba !== baseTitle(b)) return false;
-  return sameArtist(a.artist, b.artist);
+  return sameArtist(a.artist, b.artist) && titleSimilar(baseTitle(a), baseTitle(b));
 }
 
 /**
@@ -151,16 +187,37 @@ export function sameSong(a: Track, b: Track): boolean {
  * the pass stays effectively linear (title buckets are tiny) instead of O(n²).
  */
 export function collapseVersions<T extends { track: Track }>(sortedItems: T[]): T[] {
-  const keptByTitle = new Map<string, T[]>();
-  const out: T[] = [];
+  // Two cheap bucketed passes cover the two ways one song shows up twice:
+  //  1) same base title, differently-tagged artist ("Waka Flocka Flame" vs "Waka Flocka")
+  //  2) same artist, spelling / part-in-parens title variants ("Daisy Dukes" vs "Dazzey Duks",
+  //     "Whoomp There It Is" vs "Whoomp!")
+  // A single exact bucket key can't catch both (the variants differ on different fields), so we run
+  // both. Buckets stay small, so each pass is effectively linear.
+  const byTitle = new Map<string, T[]>();
+  const pass1: T[] = [];
   for (const item of sortedItems) {
     const title = baseTitle(item.track);
-    const bucket = keptByTitle.get(title);
+    const bucket = byTitle.get(title);
     if (bucket) {
       if (bucket.some((k) => sameArtist(k.track.artist, item.track.artist))) continue;
       bucket.push(item);
     } else {
-      keptByTitle.set(title, [item]);
+      byTitle.set(title, [item]);
+    }
+    pass1.push(item);
+  }
+
+  const byArtist = new Map<string, Array<{ title: string }>>();
+  const out: T[] = [];
+  for (const item of pass1) {
+    const ak = primaryArtist(item.track.artist);
+    const title = baseTitle(item.track);
+    const bucket = byArtist.get(ak);
+    if (bucket) {
+      if (bucket.some((k) => titleSimilar(k.title, title))) continue;
+      bucket.push({ title });
+    } else {
+      byArtist.set(ak, [{ title }]);
     }
     out.push(item);
   }

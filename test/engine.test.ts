@@ -93,7 +93,7 @@ test("recommend: perfect harmonic+tempo match ranks first", () => {
     mk("adjacent", "9A", 129, 6), // strong
     mk("wrongtempo", "8A", 150, 6), // right key, off tempo
   ];
-  const res = recommend({ seed }, pool);
+  const res = recommend({ seed }, pool, { minScoreRatio: 0 }); // test pure ranking, keep all picks
   assert.equal(res[0].track.id, "perfect");
   assert.equal(res[res.length - 1].track.id, "clash");
 });

@@ -191,5 +191,9 @@ export function recommend(
 
   out.sort((x, y) => y.score - x.score);
   const ranked = cfg.dedupeVersions ? collapseVersions(out) : out;
-  return ranked.slice(0, cfg.limit);
+  // Quality floor: keep only picks within minScoreRatio of the best, so a seed with just a few
+  // strong matches returns a short list rather than 21 padded-out weak ones. Then cap at limit.
+  const floor = ranked.length ? ranked[0].score * cfg.minScoreRatio : 0;
+  const kept = ranked.filter((s) => s.score >= floor);
+  return kept.slice(0, cfg.limit);
 }
