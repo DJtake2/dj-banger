@@ -927,3 +927,11 @@ html, body {
 .oc-crate.err { background: color-mix(in srgb, var(--match-clash) 14%, transparent); color: #fecdd3; }
 .oc-crate .miss { color: #fde68a; text-decoration: underline dotted; cursor: help; }
 .oc-x2 { position: absolute; top: 4px; right: 6px; border: 0; background: transparent; color: inherit; font-size: 15px; cursor: pointer; opacity: .7; }
+/* Short windows (Bottom Bar layout): keep On Cue inside its box, drop the secondary lines. */
+.oncue-home, .oncue { overflow: hidden; }
+@media (max-height: 420px) {
+  .oc-meta, .oc-progress, .oc-crate { display: none; }
+  .oc-head { padding-top: 4px; }
+  .oc-decks { padding: 3px 10px; }
+  .oc-deck { padding: 3px 8px; }
+}
