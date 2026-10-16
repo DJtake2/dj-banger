@@ -905,3 +905,17 @@ html, body {
 #collapsedPill.dnp .pill-flame { filter: drop-shadow(0 0 10px rgba(244,63,94,.9)); }
 @keyframes pill-dnp { from { background: #4c0519; box-shadow: -6px 0 24px rgba(244,63,94,.35); } to { background: #e11d48; box-shadow: -6px 0 30px rgba(244,63,94,.8); } }
 .sp-result.ok { color: var(--match-perfect); }
+
+/* ---- Missing Gems controls (footer) -------------------------------------- */
+.gemsctl { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.gemsctl .seg { margin-left: 0; }
+.footer #energySeg { margin-left: 0; }
+.fam { -webkit-app-region: no-drag; display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 650; color: var(--text-dim); cursor: pointer; }
+.fam input[type="range"] { width: 76px; accent-color: var(--accent); cursor: pointer; }
+.fam.off { opacity: .45; }
+.fam.off input[type="range"] { accent-color: var(--text-faint); }
+.gemsbtn { -webkit-app-region: no-drag; appearance: none; cursor: pointer; font: inherit; font-size: 10px; font-weight: 750; padding: 4px 9px; border-radius: 8px; border: 1px solid var(--border-soft); background: var(--surface-2); color: var(--text-dim); }
+.gemsbtn.on { color: #0b1a2a; background: #7dd3fc; border-color: #7dd3fc; }
+.gemtag { display: inline-block; margin-right: 6px; font-size: 9.5px; font-weight: 800; letter-spacing: .02em; color: #7dd3fc; }
+@media (max-width: 900px) { .footer .grip { display: none; } .gemsctl { margin-left: 0; } .fam span { display: none; } }
+@media (max-width: 620px) { .footer { flex-wrap: wrap; } .fam { display: none; } }

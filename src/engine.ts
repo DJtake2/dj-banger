@@ -121,6 +121,13 @@ export function recommend(
   config: Partial<EngineConfig> = {},
 ): Suggestion[] {
   const cfg: EngineConfig = { ...DEFAULT_CONFIG, ...config, weights: { ...DEFAULT_CONFIG.weights, ...config.weights } };
+  const vibe = cfg.vibe ?? "same";
+  // Curveball: harmonic + tempo rules relax (you'll mix it in with a cut or an echo out).
+  if (vibe === "curveball") {
+    cfg.weights = { ...cfg.weights, key: 0.14, bpm: 0.12 };
+    cfg.bpmTolerancePct = Math.max(cfg.bpmTolerancePct, 18);
+  }
+  const nowSec = cfg.nowSec ?? Math.floor(Date.now() / 1000);
   const { seed } = ctx;
   const played = ctx.playedIds ?? new Set<string>();
   // When the seed has NO genre tag, we can't score genre — shift that weight onto artist affinity
@@ -145,9 +152,13 @@ export function recommend(
     // Same-language boost: a Spanish seed should keep surfacing Spanish music (across Latin
     // sub-genres) even when genre tags differ. Only boosts a match — never penalizes unknowns.
     if (seedLocale && trackLocale(t) === seedLocale) gScore = Math.max(gScore, 0.9);
+    const sameLane = gScore;
+    // Switch it up / curveball: a DIFFERENT style is the point — score genre distance instead.
+    // (Unknown genre stays neutral either way.)
+    if (vibe !== "same" && seed.genre && t.genre) gScore = 1 - gScore + 0.3;
     // Artist affinity: do the seed's and candidate's artists get mixed together? Neutral (0.5)
     // when no scorer is wired or the pair has never been played near each other.
-    const aScore = cfg.artistAffinity ? cfg.artistAffinity(seed.artist, t.artist) : 0.5;
+    const aScore = vibe === "same" && cfg.artistAffinity ? cfg.artistAffinity(seed.artist, t.artist) : 0.5;
 
     let score =
       (w.key * kScore +
@@ -161,13 +172,33 @@ export function recommend(
     // a related pick leads even over a key/BPM-perfect track from a different style. gScore already
     // folds in genre-family + Spanish-locale; a strongly-related ARTIST also counts as in-lane.
     // Multiplier: in-lane → up to ×1.30, off-lane (different style) → down to ~×0.55.
-    const lane = Math.max(gScore, aScore >= 0.75 ? aScore : 0);
-    score *= 0.55 + 0.75 * lane;
+    if (vibe === "same") {
+      const lane = Math.max(gScore, aScore >= 0.75 ? aScore : 0);
+      score *= 0.55 + 0.75 * lane;
+    } else {
+      // Out of lane on purpose: reward a different style, gently, so key/BPM still lead.
+      score *= 0.75 + 0.45 * Math.min(1, Math.max(0, 1 - sameLane));
+    }
 
     // World popularity (Deezer global rank, 0..1) — a big factor, like the reference API: a
     // crowd-pleasing hit outranks a deep cut when both fit. Neutral (no effect) when unknown.
+    // With a familiarity target the closest to it wins instead (deep cuts ↔ hits).
     const pop = typeof t.popularity === "number" ? t.popularity : 0.5;
-    score *= 0.78 + 0.44 * pop; // pop 1 → ×1.22, unknown → ×1.0, obscure → ×0.78
+    if (cfg.familiarity != null) score *= 1.25 - 0.5 * Math.abs(pop - cfg.familiarity);
+    else if (vibe === "curveball") score *= 0.7 + 0.6 * pop; // a curveball the room still knows
+    else score *= 0.78 + 0.44 * pop; // pop 1 → ×1.22, unknown → ×1.0, obscure → ×0.78
+
+    // Curveball: a different era is part of the surprise.
+    if (vibe === "curveball" && seed.year && t.year && Math.abs(seed.year - t.year) >= 10) score *= 1.12;
+
+    // Missing Gems: what you haven't played in ages floats up; last weekend's tracks sink.
+    let lastAgo: number | null = null;
+    if (cfg.gems && cfg.lastPlayed) {
+      const last = cfg.lastPlayed(t);
+      lastAgo = last ? nowSec - last : null;
+      const days = lastAgo == null ? Infinity : lastAgo / 86400;
+      score *= days === Infinity ? 1.14 : days > 365 ? 1.2 : days > 120 ? 1.1 : days < 30 ? 0.82 : 1;
+    }
 
     // Soft penalty for repeating the seed's artist (avoid three Drake tracks in a row).
     if (cfg.sameArtistPenalty > 0 && t.artist && seed.artist && t.artist.toLowerCase() === seed.artist.toLowerCase()) {
@@ -175,6 +206,11 @@ export function recommend(
     }
 
     const reasons = [keyRelation(seed.key, t.key), b.note, e.note];
+    if (cfg.gems && cfg.lastPlayed) {
+      const days = lastAgo == null ? null : Math.floor(lastAgo / 86400);
+      const gem = days == null ? "Never played" : days > 365 ? `Not played in ${Math.floor(days / 365)}y` : days > 120 ? `Not played in ${Math.round(days / 30)} mo` : null;
+      if (gem) reasons.push(gem);
+    }
     if (gScore >= 0.8 && t.genre) reasons.push(t.genre);
     // Flag a strong artist connection (you regularly mix these two together).
     if (aScore >= 0.7 && t.artist && seed.artist && t.artist.toLowerCase() !== seed.artist.toLowerCase()) {

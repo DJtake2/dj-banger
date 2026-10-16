@@ -98,8 +98,8 @@ export function buildArtistAffinity(
 export const buildArtistAffinityFromSessions = (sessions: NowPlaying[][], window = 6) =>
   buildArtistAffinity(sessions, [], window);
 
-/** Read every Serato History session + fold in library collaborations. */
-export async function loadArtistAffinity(library: { artist?: string }[] = [], seratoDir?: string, window = 6): Promise<ArtistAffinity> {
+/** Every Serato History session, parsed (one array per session file). */
+export async function loadHistorySessions(seratoDir?: string): Promise<NowPlaying[][]> {
   const dir = sessionsDir(seratoDir);
   let files: string[] = [];
   try { files = (await readdir(dir)).filter((f) => f.endsWith(".session")); } catch { /* no history */ }
@@ -107,5 +107,10 @@ export async function loadArtistAffinity(library: { artist?: string }[] = [], se
   for (const f of files) {
     try { sessions.push(await parseSession(join(dir, f))); } catch { /* skip unreadable */ }
   }
-  return buildArtistAffinity(sessions, library, window);
+  return sessions;
+}
+
+/** Read every Serato History session + fold in library collaborations. */
+export async function loadArtistAffinity(library: { artist?: string }[] = [], seratoDir?: string, window = 6, sessions?: NowPlaying[][]): Promise<ArtistAffinity> {
+  return buildArtistAffinity(sessions ?? (await loadHistorySessions(seratoDir)), library, window);
 }

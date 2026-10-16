@@ -150,7 +150,7 @@ function rowHtml(s, kind) {
   const cls = kind !== "spotify" && selected.has(id) ? "drow sel" : "drow";
   return `<div class="${cls}" ${draggable} data-id="${esc(id)}">
     ${left}
-    <div class="rmain"><div class="rt">${esc(s.title)}</div><div class="ra">${esc(s.artist || "")}</div></div>
+    <div class="rmain"><div class="rt">${esc(s.title)}</div><div class="ra">${s.gem ? `<span class="gemtag" title="Missing Gem — not played in a long time">◆ ${esc(s.gem)}</span>` : ""}${esc(s.artist || "")}</div></div>
     <button class="banbtn" data-ban-artist="${esc(s.artist || "")}" data-ban-title="${esc(s.title || "")}" title="Add to Do Not Play" aria-label="Do Not Play">${BAN_ICON}</button>
     <span class="rbpm">${bpm}${mult}</span>
     ${key}
@@ -434,6 +434,24 @@ el("energySeg").addEventListener("click", (e) => {
   for (const b of el("energySeg").children) b.classList.toggle("on", b === btn);
   post("/config", { energyDirection: btn.dataset.dir });
 });
+
+// ---- Missing Gems: vibe / deep cuts ↔ hits / not played in ages ----------
+function showGems(g) {
+  for (const b of el("vibeSeg").children) b.classList.toggle("on", b.dataset.vibe === g.vibe);
+  const set = typeof g.familiarity === "number";
+  el("famCtl").classList.toggle("off", !set);
+  if (set) el("famRange").value = Math.round(g.familiarity * 100);
+  el("gemsBtn").classList.toggle("on", !!g.gems);
+}
+el("vibeSeg").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  for (const x of el("vibeSeg").children) x.classList.toggle("on", x === b);
+  post("/config", { vibe: b.dataset.vibe });
+});
+el("famRange").addEventListener("change", (e) => { el("famCtl").classList.remove("off"); post("/config", { familiarity: Number(e.target.value) / 100 }); });
+el("famRange").addEventListener("dblclick", () => { el("famCtl").classList.add("off"); el("famRange").value = 50; post("/config", { familiarity: null }); });
+el("gemsBtn").addEventListener("click", () => { const on = !el("gemsBtn").classList.contains("on"); el("gemsBtn").classList.toggle("on", on); post("/config", { gems: on }); });
 
 // ---- nav (Home / Charts) ---------------------------------------------------
 el("nav").addEventListener("click", (e) => {
@@ -850,6 +868,7 @@ function connect() {
     const d = JSON.parse(ev.data);
     setConnected(true, `${d.librarySize.toLocaleString()} tracks`);
     if (d.energyDirection) for (const b of el("energySeg").children) b.classList.toggle("on", b.dataset.dir === d.energyDirection);
+    if (d.gems) showGems(d.gems);
     if (d.streaming) streamingStatusGlobal = d.streaming;
     syncSettings(d.settings);
     if (lastDecks) render();

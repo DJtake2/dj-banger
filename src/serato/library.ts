@@ -76,7 +76,7 @@ export async function loadLibrary(seratoDir = defaultSeratoDir()): Promise<Track
       key: key ?? undefined,
       energy: energy.value,
       lengthSec: lenToSec(f["tlen"]),
-      year: num(f["tyr"]) ?? num(f["tyer"]),
+      year: num(f["ttyr"]) ?? num(f["tyr"]) ?? num(f["tyer"]), // Serato's tag is "ttyr"
       raw: {
         energySource: energy.source,
         ...(comment ? { comment } : {}),

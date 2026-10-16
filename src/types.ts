@@ -85,6 +85,20 @@ export interface EngineConfig {
   minResults: number;
   /** Maximum number of suggestions to return (the list can be shorter — see minScoreRatio). */
   limit: number;
+  /**
+   * Missing Gems modes. "same" (default) stays in the lane; "switch" keeps it mixable (key/BPM)
+   * but moves to a different style; "curveball" loosens key and tempo and goes for a different
+   * style and era that the room will still know.
+   */
+  vibe?: "same" | "switch" | "curveball";
+  /** Deep cuts (0) ↔ hits (1). Unset = the default lean towards crowd-pleasers. */
+  familiarity?: number | null;
+  /** When this DJ last played a track (unix seconds), from Serato's history. Undefined = never. */
+  lastPlayed?: (t: Track) => number | undefined;
+  /** Lift tracks not played in a long time (and never played), sink ones played lately. */
+  gems?: boolean;
+  /** "Now" for the gems maths (unix seconds). Default: the clock. */
+  nowSec?: number;
 }
 
 export const DEFAULT_CONFIG: EngineConfig = {

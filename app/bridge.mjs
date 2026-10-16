@@ -22,7 +22,8 @@ import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { startLiveLoop } from "../src/live.ts";
 import { recommend } from "../src/engine.ts";
-import { loadArtistAffinity, EMPTY_AFFINITY } from "../src/affinity.ts";
+import { loadArtistAffinity, loadHistorySessions, EMPTY_AFFINITY } from "../src/affinity.ts";
+import { buildPlayIndex } from "../src/playIndex.ts";
 import { DeezerSimilarity } from "../src/deezerSimilarity.ts";
 import { parseDoNotPlay, matchDoNotPlay, isDoNotPlay } from "../src/dnp.ts";
 import { keyCompatibility } from "../src/camelot.ts";
@@ -104,7 +105,7 @@ const CONFIG_PATH = process.env.BANGER_CONFIG || join(__dirname_root(), ".config
 function __dirname_root() {
   return join(dirname(fileURLToPath(import.meta.url)), "..");
 }
-let appConfig = { spotify: { clientId: "", clientSecret: "" }, tidal: { clientId: "", clientSecret: "" }, streamingService: "spotify", doNotPlay: "", oncue: { crmUrl: "", key: "", eventId: "" } };
+let appConfig = { spotify: { clientId: "", clientSecret: "" }, tidal: { clientId: "", clientSecret: "" }, streamingService: "spotify", doNotPlay: "", gems: { vibe: "same", familiarity: null, gems: false }, oncue: { crmUrl: "", key: "", eventId: "" } };
 let dnpEntries = [];               // parsed Do-Not-Play list (one entry per line)
 let artistAffinity = EMPTY_AFFINITY; // co-play index; rebuilt from history on startup
 const deezerSim = new DeezerSimilarity(); // artist-similarity neighborhood (Deezer, warmed per seed)
@@ -126,6 +127,28 @@ function applyConfig() {
   if (td.clientId && td.clientSecret) setTidalCreds(td.clientId, td.clientSecret);
   if (appConfig.streamingService) setActiveService(appConfig.streamingService);
   dnpEntries = parseDoNotPlay(appConfig.doNotPlay);
+  applyGems(appConfig.gems || {});
+}
+
+// ---- Missing Gems: vibe modes, deep cuts ↔ hits, not-played-in-ages (src/engine.ts) ---------
+let playIndex = buildPlayIndex([]);   // when each track was last played; filled from history at startup
+const seenPlays = new Set();          // "id:start" of live plays already recorded
+const TONIGHT_SEC = 6 * 3600;         // tracks played this recently are left out of suggestions
+function applyGems(g) {
+  engineConfig.vibe = ["same", "switch", "curveball"].includes(g.vibe) ? g.vibe : "same";
+  engineConfig.familiarity = typeof g.familiarity === "number" && g.familiarity >= 0 && g.familiarity <= 1 ? g.familiarity : null;
+  engineConfig.gems = !!g.gems;
+}
+function gemsState() {
+  return { vibe: engineConfig.vibe, familiarity: engineConfig.familiarity, gems: engineConfig.gems };
+}
+/** "Never played" / "2y" / "8 mo" — shown on a row in gems mode. */
+function gemLabel(id) {
+  if (!engineConfig.gems) return null;
+  const last = playIndex.last(id);
+  if (!last) return "never played";
+  const days = (Date.now() / 1000 - last) / 86400;
+  return days > 365 ? `${Math.floor(days / 365)}y` : days > 120 ? `${Math.round(days / 30)} mo` : null;
 }
 
 // ---- album art: extract embedded cover art from local files (ffmpeg), cached to disk --------
@@ -428,6 +451,7 @@ function toWire(s, seed) {
     energyReal: s.track.raw?.energySource === "audio",
     score: s.score,
     match: band,
+    gem: gemLabel(s.track.id),
     reasons: cleanReasons(s.reasons),
   };
 }
@@ -457,7 +481,8 @@ function rankDeck(deck, seed) {
   const cands = loopHandle.pool.filter(
     (tt) => passesDeckFilter(tt, seed, f) && !(dnpEntries.length && isDoNotPlay(dnpEntries, tt)) && !oncueDnp(tt),
   );
-  const suggestions = recommend({ seed }, cands, engineConfig);
+  const playedIds = playIndex.playedSince(Math.floor(Date.now() / 1000) - TONIGHT_SEC);
+  const suggestions = recommend({ seed, playedIds }, cands, engineConfig);
   return {
     deck,
     nowPlaying: seedInfo(seed),
@@ -610,7 +635,14 @@ async function main() {
     config: engineConfig,
     writeCrate: false,
     log: (m) => console.log("·", m),
-    onDecks: (state) => oncue?.onDecks(state),
+    onDecks: (state) => {
+      // Live plays keep the "last played" index current (gems + tonight's exclusions).
+      for (const np of Object.values(state.decks)) {
+        const k = `${np.id}:${np.startTime}`;
+        if (np.played !== false && np.startTime && !seenPlays.has(k)) { seenPlays.add(k); playIndex.record(np.id, np.startTime); }
+      }
+      oncue?.onDecks(state);
+    },
     onEvent: (e) => {
       deckSeeds = {};
       for (const d of e.decks || []) if (d.seed) deckSeeds[d.deck] = d.seed;
@@ -627,7 +659,11 @@ async function main() {
   // suggestions favor artists this DJ actually mixes together. Non-fatal if history is absent.
   try {
     const t = performance.now();
-    artistAffinity = await loadArtistAffinity(loopHandle.pool);
+    const sessions = await loadHistorySessions();
+    artistAffinity = await loadArtistAffinity(loopHandle.pool, undefined, 6, sessions);
+    playIndex = buildPlayIndex(sessions);
+    engineConfig.lastPlayed = (tr) => playIndex.last(tr.id);
+    console.log(`Play history: ${playIndex.size} tracks played before`);
     await deezerSim.load(join(CACHE_ROOT, "deezer-artists.json")); // persisted + bundled seed
     // Blend: Deezer "cultural association" (Camila→Taylor/Dua) when we've warmed the seed's
     // neighborhood, else fall back to this DJ's own co-play history. max() so neither penalizes.
@@ -671,6 +707,7 @@ async function main() {
       sse(res, "state", {
         librarySize: loopHandle.librarySize,
         energyDirection: engineConfig.energyDirection,
+        gems: gemsState(),
         streaming: streamingStatus(),
         settings: {
           spotify: { clientId: appConfig.spotify.clientId || "", hasSecret: !!appConfig.spotify.clientSecret },
@@ -828,7 +865,17 @@ async function main() {
       req.on("data", (c) => (body += c));
       req.on("end", async () => {
         try {
-          const { energyDirection } = JSON.parse(body || "{}");
+          const { energyDirection, vibe, familiarity, gems } = JSON.parse(body || "{}");
+          if (vibe !== undefined || familiarity !== undefined || gems !== undefined) {
+            const g = { ...gemsState() };
+            if (vibe !== undefined) g.vibe = vibe;
+            if (familiarity !== undefined) g.familiarity = familiarity;
+            if (gems !== undefined) g.gems = gems;
+            applyGems(g);
+            appConfig.gems = gemsState();
+            await saveConfig();
+            broadcastDecks("live", true);
+          }
           if (["flat", "build", "cool"].includes(energyDirection)) {
             engineConfig.energyDirection = energyDirection;
             broadcastDecks("live"); // re-rank both decks with the new trajectory

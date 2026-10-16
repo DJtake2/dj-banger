@@ -167,6 +167,17 @@
         <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="8" cy="6" r="1.6"/><circle cx="8" cy="12" r="1.6"/><circle cx="8" cy="18" r="1.6"/><circle cx="16" cy="6" r="1.6"/><circle cx="16" cy="12" r="1.6"/><circle cx="16" cy="18" r="1.6"/></svg>
         drag a track to your deck
       </span>
+      <div class="gemsctl" id="gemsCtl">
+        <div class="seg" id="vibeSeg" title="Missing Gems — what kind of next track">
+          <button data-vibe="same" class="on">Same vibe</button>
+          <button data-vibe="switch">Switch it up</button>
+          <button data-vibe="curveball">Curveball</button>
+        </div>
+        <label class="fam" id="famCtl" title="Deep cuts ↔ hits (double-click to reset)">
+          <span>Deep</span><input type="range" id="famRange" min="0" max="100" step="5" value="50" /><span>Hits</span>
+        </label>
+        <button class="gemsbtn" id="gemsBtn" title="Lift tracks you haven't played in a long time">◆ Gems</button>
+      </div>
       <div class="seg" id="energySeg">
         <button data-dir="cool">Cool</button>
         <button data-dir="flat" class="on">Flat</button>
