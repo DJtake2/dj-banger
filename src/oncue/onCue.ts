@@ -246,10 +246,20 @@ export class OnCue {
       this.error = (e as Error).message;
       this.events = (await this.readCache<OnCueEvent[]>("events.json")) ?? this.events;
     }
-    const keep = this.settings.eventId && this.events.some((e) => e.id === this.settings.eventId);
+    // A remembered event that isn't in the list any more (another CRM, cancelled, long past)
+    // is dropped — otherwise the picker shows the first event as chosen while On Cue still
+    // follows the old one, and choosing that first event does nothing.
+    const keep = !!this.settings.eventId && this.events.some((e) => e.id === this.settings.eventId);
+    if (!keep && this.settings.eventId && this.events.length) {
+      this.settings.eventId = "";
+      this.plan = null;
+    }
+    // Tonight's gig first; otherwise the next one that has a plan.
     const todays = this.events.find((e) => e.today && e.hasPlan);
-    if (!keep && todays) await this.select(todays.id);
+    const next = this.events.find((e) => e.hasPlan && e.date >= localDay(this.now()));
+    if (todays && this.settings.eventId !== todays.id) await this.select(todays.id);
     else if (this.settings.eventId) await this.refreshPlan();
+    else if (next) await this.select(next.id);
     else {
       this.emit();
       this.scheduleRefresh();

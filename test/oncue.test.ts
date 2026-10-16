@@ -251,3 +251,17 @@ test("On Cue: a new day re-reads the event list once (picks up that day's gig)",
   oc.stop();
   assert.ok(urls.slice(n).some((u) => u.endsWith("/api/oncue/events")), "new day: the event list again");
 });
+
+test("On Cue: a remembered event that isn't in the list is dropped; the next gig with a plan is picked", async () => {
+  const now = new Date("2026-10-15T15:00:00");
+  const p = plan("2026-10-17");
+  p.event.today = false; // two days out: the "next gig" path, not "tonight"
+  const { f } = fakeCrm(p);
+  let snap: OnCueSnapshot | null = null;
+  const oc = new OnCue({ eventId: "old-test-event" }, { cacheDir: await mkdtemp(join(tmpdir(), "oncue-cache-")), seratoDir: await seratoWith([]), fetch: f, now: () => now, onChange: (s) => (snap = s) });
+  await oc.configure({ crmUrl: "https://crm.example.com", key: "oc1.k.s" });
+  oc.stop();
+  assert.equal(snap!.eventId, "ev1");
+  assert.equal(snap!.plan?.event.name, "Sam & Alex");
+  assert.equal(snap!.error, null);
+});

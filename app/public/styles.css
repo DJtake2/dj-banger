@@ -935,3 +935,8 @@ html, body {
   .oc-decks { padding: 3px 10px; }
   .oc-deck { padding: 3px 8px; }
 }
+/* Chart headers take their source's colour (Spotify green stays the default). */
+.chart h3.src-apple { color: #fa5c6f; }
+.chart h3.src-deezer { color: #a238ff; }
+.chart h3.src-tidal { color: #e6e6e6; }
+.oc-fix { margin-left: 6px; border: 0; border-radius: 6px; padding: 2px 8px; background: #fecdd3; color: #4c0519; font: inherit; font-size: 11px; font-weight: 750; cursor: pointer; }

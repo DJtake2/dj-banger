@@ -953,9 +953,10 @@ async function main() {
     if (url.pathname === "/charts") {
       try {
         const charts = await streamingCharts(loopHandle.pool);
-        const wired = charts.map((c) => ({ name: c.name, tracks: c.tracks.map((st) => streamWire(st, null)) }));
+        const wired = charts.map((c) => ({ name: c.name, source: c.source, tracks: c.tracks.map((st) => ({ ...streamWire(st, null), src: c.source })) }));
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ ...streamingStatus(), charts: wired }));
+        // Public charts need no account, so "connected" is true whenever there's a chart to show.
+        res.end(JSON.stringify({ ...streamingStatus(), connected: wired.length > 0 || streamingStatus().connected, charts: wired }));
       } catch (e) {
         res.writeHead(200).end(JSON.stringify({ connected: false, charts: [], error: String(e.message || e) }));
       }

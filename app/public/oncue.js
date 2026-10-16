@@ -103,9 +103,12 @@
     }
 
     const plan = snap.plan;
-    const evOpts = snap.events.map((e) => `<option value="${e.id}" ${e.id === snap.eventId ? "selected" : ""}>${e.today ? "Tonight · " : `${fmtDay(e.date)} · `}${esc(e.name)}${e.hasPlan ? "" : " (no plan)"}</option>`).join("");
-    const status = snap.error && !plan
-      ? `<div class="oc-err">${esc(snap.error)}</div>`
+    const chosen = snap.events.some((e) => e.id === snap.eventId);
+    const evOpts = (chosen ? "" : `<option value="" selected disabled>Pick an event…</option>`) + snap.events.map((e) => `<option value="${e.id}" ${e.id === snap.eventId ? "selected" : ""}>${e.today ? "Tonight · " : `${fmtDay(e.date)} · `}${esc(e.name)}${e.hasPlan ? "" : " (no plan)"}</option>`).join("");
+    // A refused key or a wrong address is never "just offline": say so, with the way to fix it.
+    const needsSettings = /key|address|settings/i.test(snap.error || "");
+    const status = snap.error && (!plan || needsSettings)
+      ? `<div class="oc-err">${esc(snap.error)}${needsSettings ? ` <button class="oc-fix" id="ocFix">Open settings</button>` : ""}${plan ? `<br><span class="dim">Showing the copy saved ${esc(snap.planAge || "earlier")}.</span>` : ""}</div>`
       : snap.offline
         ? `<div class="oc-warn">Offline — showing the copy saved ${esc(snap.planAge || "earlier")}.</div>`
         : "";
@@ -160,6 +163,7 @@
     }
     el("ocEvent")?.addEventListener("change", (e) => post("/oncue/select", { eventId: e.target.value }));
     el("ocRefresh")?.addEventListener("click", () => post("/oncue/refresh", {}));
+    el("ocFix")?.addEventListener("click", () => { el("settingsModal").hidden = false; el("ocUrl")?.focus(); });
     el("ocCrate")?.addEventListener("click", () => post("/oncue/crate", crate?.state === "waiting" ? { cancel: true } : {}));
     el("ocCrateDismiss")?.addEventListener("click", () => { crate = null; render(); });
     el("ocDock")?.addEventListener("click", () => { docked = !docked; localStorage.setItem("oncue-docked", docked ? "1" : "0"); place(); render(); });
@@ -219,7 +223,7 @@
     st.textContent = snap.configured ? (snap.error ? "check settings" : "connected") : "not connected";
     st.classList.toggle("on", snap.configured && !snap.error);
     const url = el("ocUrl");
-    if (url && document.activeElement !== url && !url.value) url.value = snap.crmUrl || "";
+    if (url && document.activeElement !== url) url.value = snap.crmUrl || "";
     el("ocKey").placeholder = snap.hasKey ? "Key saved — paste a new one to replace it" : "On Cue key — oc1.…";
   }
 

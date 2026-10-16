@@ -139,7 +139,7 @@ function rowHtml(s, kind) {
   const right = s.keyShift != null
     ? `<span class="shift">${shiftLabel(s.keyShift)}</span>`
     : kind === "spotify"
-      ? `<span class="shift">${s.owned ? "OWN" : ({ apple: "AM", tidal: "TIDAL", spotify: "SP" }[activeStreaming] || "SP")}</span>`
+      ? `<span class="shift">${s.owned ? "OWN" : ({ apple: "AM", tidal: "TIDAL", spotify: "SP", deezer: "DZ" }[s.src || activeStreaming] || "SP")}</span>`
       : `<span class="shift"></span>`;
   // left cell: album art (with the source logo — Serato / Spotify — showing through when there's
   // no art). Library rows are click-to-select for crate export (a check overlays on select).
@@ -468,20 +468,26 @@ el("nav").addEventListener("click", (e) => {
   else render(); // home → render() re-establishes deck tabs if narrow
 });
 
+function chartIcon(source) {
+  if (source === "apple") return `<img src="logos/apple.svg" alt="" style="width:13px;height:13px" />`;
+  if (source === "tidal") return `<img src="logos/tidal.png" alt="" style="width:13px;height:13px;border-radius:3px" />`;
+  if (source === "deezer") return `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="2" y="15" width="4" height="5" rx="1"/><rect x="7" y="11" width="4" height="9" rx="1"/><rect x="12" y="7" width="4" height="13" rx="1"/><rect x="17" y="3" width="4" height="17" rx="1"/></svg>`;
+  return SPOTIFY_LOGO;
+}
+
 async function loadCharts() {
   const scroll = el("chartsScroll");
   scroll.innerHTML = `<div class="empty"><div class="big">Loading charts…</div></div>`;
   try {
     const d = await (await fetch(API + "/charts")).json();
-    if (!d.connected) {
-      scroll.innerHTML = `<div class="empty"><div class="big">Connect Spotify to see charts</div>
-        <div>Open Settings (gear, top-right) and add your Spotify credentials.<br>Charts pull Spotify's Top 50 &amp; Viral playlists — owned tracks are draggable to a deck.</div></div>`;
+    if (!d.charts?.length) {
+      scroll.innerHTML = `<div class="empty"><div class="big">No charts available right now</div>
+        <div>Charts come from Apple Music and Deezer (no account needed). Check the internet connection and open Charts again.</div></div>`;
       return;
     }
-    if (!d.charts?.length) { scroll.innerHTML = `<div class="empty"><div class="big">No charts available right now</div></div>`; return; }
     scroll.innerHTML = `<div class="charts-cols">` + d.charts.map((c) => `
       <div class="chart">
-        <h3>${SPOTIFY_LOGO} ${esc(c.name)} <span style="color:var(--text-faint);font-weight:600;margin-left:auto">${c.tracks.length}</span></h3>
+        <h3 class="src-${esc(c.source || "spotify")}">${chartIcon(c.source)} ${esc(c.name)} <span style="color:var(--text-faint);font-weight:600;margin-left:auto">${c.tracks.filter((t) => t.owned).length} owned · ${c.tracks.length}</span></h3>
         <div class="reclist">${c.tracks.map((t) => rowHtml(t, t.owned ? "library" : "spotify")).join("")}</div>
       </div>`).join("") + `</div>`;
     wireRows(scroll);
