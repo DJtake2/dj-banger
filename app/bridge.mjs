@@ -29,6 +29,8 @@ import { parseDoNotPlay, matchDoNotPlay, isDoNotPlay } from "../src/dnp.ts";
 import { keyCompatibility } from "../src/camelot.ts";
 import { writeSuggestionsCrate } from "../src/serato/crateWriter.ts";
 import { OnCue } from "../src/oncue/onCue.ts";
+import { buildLibraryIndex, resolveSong } from "../src/oncue/resolve.ts";
+import { writeEventCrates, isSeratoRunning } from "../src/serato/eventCrate.ts";
 import { streamingRecommend, streamingStatus, streamingCharts, setSpotifyCreds, testSpotifyCreds, setTidalCreds, testTidalCreds, setActiveService, getActiveService } from "../src/streaming/index.ts";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
@@ -164,6 +166,51 @@ let oncueDnp = () => false; // tonight's do-not-play list, as a track predicate 
 function oncueWire(s) {
   return s;
 }
+// "Send to Serato": tonight's plan as crates. Serato rewrites crates when it quits, so with
+// Serato open the write waits (polling) and happens the moment it closes.
+let libIndex = null;     // title/path index of the library, built on first use
+let crateStatus = null;  // { state: "waiting" | "done" | "error", … } — shown in the On Cue panel
+let crateWait = null;    // poll timer while waiting for Serato to close
+function setCrateStatus(st) { crateStatus = st; broadcast("crate", st); }
+function crateSections() {
+  const plan = oncueSnap?.plan;
+  if (!plan) throw new Error("Pick an event in On Cue first.");
+  if (!libIndex) libIndex = buildLibraryIndex(loopHandle.pool);
+  const missing = [];
+  const sections = plan.sections.filter((s) => !s.doNotPlay).map((s) => ({
+    name: s.name,
+    paths: [...s.songs].sort((a, b) => Number(b.mustPlay) - Number(a.mustPlay)).flatMap((g) => {
+      const r = resolveSong(g, libIndex);
+      if (!r) { missing.push(g.artist ? `${g.title} — ${g.artist}` : g.title); return []; }
+      return [r.track.absPath];
+    }),
+  }));
+  return { name: plan.event.name, sections, missing };
+}
+async function runCrateWrite() {
+  try {
+    const { name, sections, missing } = crateSections();
+    const r = await writeEventCrates(name, sections, { backupRoot: join(CACHE_ROOT, "crate-backups") });
+    setCrateStatus({ state: "done", at: new Date().toISOString(), parent: r.parent, crates: r.crates.length, tracks: r.tracks, missing, backupDir: r.backupDir });
+  } catch (e) {
+    setCrateStatus({ state: "error", error: String(e.message || e) });
+  }
+}
+async function requestCrateWrite() {
+  if (crateWait) return;
+  if (!(await isSeratoRunning())) return runCrateWrite();
+  setCrateStatus({ state: "waiting" });
+  crateWait = setInterval(async () => {
+    if (await isSeratoRunning()) return;
+    clearInterval(crateWait); crateWait = null;
+    await runCrateWrite();
+  }, 4000);
+}
+function cancelCrateWrite() {
+  if (crateWait) { clearInterval(crateWait); crateWait = null; }
+  setCrateStatus(null);
+}
+
 function onOncueChange(s) {
   const prevPlan = oncueSnap?.plan?.generatedAt;
   const prevEvent = oncueSnap?.eventId;
@@ -718,6 +765,7 @@ async function main() {
       });
       if (lastPayload) sse(res, "decks", lastPayload);
       if (oncueSnap) sse(res, "oncue", oncueWire(oncueSnap));
+      if (crateStatus) sse(res, "crate", crateStatus);
       req.on("close", () => clients.delete(res));
       return;
     }
@@ -973,6 +1021,11 @@ async function main() {
         if (url.pathname === "/oncue/events") { await oncue.loadEvents(); return json(200, { ok: true }); }
         if (url.pathname === "/oncue/select") { await oncue.select(String(p.eventId || "")); return json(200, { ok: true }); }
         if (url.pathname === "/oncue/refresh") { await oncue.refreshPlan(); return json(200, { ok: true }); }
+        if (url.pathname === "/oncue/crate") {
+          if (p.cancel) { cancelCrateWrite(); return json(200, { ok: true }); }
+          await requestCrateWrite();
+          return json(200, { ok: true, status: crateStatus });
+        }
         if (url.pathname === "/oncue/tick") { oncue.toggle(String(p.songId || ""), !!p.on); return json(200, { ok: true }); }
         return json(404, { ok: false });
       } catch (e) {

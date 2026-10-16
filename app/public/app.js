@@ -876,5 +876,6 @@ function connect() {
   es.addEventListener("decks", (ev) => { lastDecks = JSON.parse(ev.data); render(); });
   es.addEventListener("streaming", (ev) => renderStreaming(JSON.parse(ev.data)));
   es.addEventListener("oncue", (ev) => window.onOncue?.(JSON.parse(ev.data))); // oncue.js
+  es.addEventListener("crate", (ev) => window.onCrate?.(JSON.parse(ev.data)));
 }
 connect();

@@ -11,6 +11,7 @@
 (() => {
   const DOCK_MIN_W = 1000;
   let snap = null;
+  let crate = null; // "Send to Serato" status from the bridge
   const open = new Set(JSON.parse(localStorage.getItem("oncue-open") || "[]"));
   let docked = localStorage.getItem("oncue-docked") !== "0";
   let userTouchedOpen = open.size > 0;
@@ -138,12 +139,14 @@
     p.innerHTML = `
       <div class="oc-head">
         <select id="ocEvent" class="oc-select" ${snap.events.length ? "" : "disabled"}>${evOpts || `<option>No events</option>`}</select>
+        ${plan ? `<button class="oc-send" id="ocCrate" title="Write tonight's plan into Serato as crates — the event, then one subcrate per section">${crate?.state === "waiting" ? "Waiting for Serato…" : "Send to Serato"}</button>` : ""}
         <button class="oc-icon" id="ocRefresh" title="Reload the plan from the CRM" aria-label="Reload">↻</button>
         <button class="oc-icon ${docked ? "on" : ""}" id="ocDock" title="${docked ? "Docked beside the decks on Home" : "Dock beside the decks on Home"}" aria-label="Dock">⫷</button>
       </div>
       ${plan ? `<div class="oc-meta">${esc([fmtDay(plan.event.date), plan.event.venue, [plan.event.startTime, plan.event.endTime].filter(Boolean).join("–")].filter(Boolean).join(" · "))}</div>
       <div class="oc-progress" title="Must-plays played"><div class="bar"><i style="width:${pct}%"></i></div><span>★ ${mp.played}/${mp.total} must-plays</span></div>` : ""}
       ${status}
+      ${crateLine()}
       ${body}`;
 
     const sc = p.querySelector(".oc-scroll");
@@ -157,6 +160,8 @@
     }
     el("ocEvent")?.addEventListener("change", (e) => post("/oncue/select", { eventId: e.target.value }));
     el("ocRefresh")?.addEventListener("click", () => post("/oncue/refresh", {}));
+    el("ocCrate")?.addEventListener("click", () => post("/oncue/crate", crate?.state === "waiting" ? { cancel: true } : {}));
+    el("ocCrateDismiss")?.addEventListener("click", () => { crate = null; render(); });
     el("ocDock")?.addEventListener("click", () => { docked = !docked; localStorage.setItem("oncue-docked", docked ? "1" : "0"); place(); render(); });
     for (const b of p.querySelectorAll("[data-toggle]")) b.addEventListener("click", () => {
       const id = b.dataset.toggle;
@@ -169,6 +174,14 @@
       e.stopPropagation();
       post("/oncue/tick", { songId: b.dataset.tick, on: b.dataset.on === "1" });
     });
+  }
+
+  function crateLine() {
+    if (!crate) return "";
+    if (crate.state === "waiting") return `<div class="oc-crate wait">Serato is open — it rewrites crates when it quits, so the crates will be written the moment you quit Serato. Tap the button again to cancel.</div>`;
+    if (crate.state === "error") return `<div class="oc-crate err">Couldn't write the crates: ${esc(crate.error)} <button class="oc-x2" id="ocCrateDismiss" aria-label="Dismiss">×</button></div>`;
+    const miss = crate.missing?.length ? ` <span class="miss" title="${esc(crate.missing.join("\n"))}">${crate.missing.length} not in your library</span>` : "";
+    return `<div class="oc-crate ok">✓ “${esc(crate.parent)}” — ${crate.tracks} tracks in ${crate.crates - 1} section crate${crate.crates === 2 ? "" : "s"}.${miss} Open Serato to see it at the top of your crates. <button class="oc-x2" id="ocCrateDismiss" aria-label="Dismiss">×</button></div>`;
   }
 
   /** The red banner + flashing pill + tab badge. */
@@ -218,6 +231,7 @@
     syncSettings();
   };
   window.onViewChange = () => { place(); render(); };
+  window.onCrate = (c) => { crate = c; render(); };
   window.addEventListener("resize", () => place());
   // The NOW marker moves with the clock even when nothing else changes.
   setInterval(() => { if (snap?.plan) render(); }, 60000);
