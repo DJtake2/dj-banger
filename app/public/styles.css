@@ -803,3 +803,105 @@ html, body {
   animation: spin 0.8s linear infinite; margin: 0 auto;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ============================================================================
+   On Cue — tonight's plan beside the decks (oncue.js)
+   ============================================================================ */
+.home-split { flex: 1; min-height: 0; display: flex; }
+.home-split > .decks-wrap { flex: 1; min-width: 0; }
+.oncue-dock { width: 330px; flex: none; min-height: 0; display: flex; border-right: 1px solid var(--border-soft); }
+.oncue-home { flex: 1; min-height: 0; display: flex; justify-content: center; }
+.oncue-home > .oncue { width: 100%; max-width: 760px; }
+.oncue { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+
+.tab-badge { margin-left: 4px; font-size: 10px; font-weight: 800; padding: 1px 5px; border-radius: 6px; background: rgba(255,255,255,.14); color: inherit; }
+
+.oc-head { display: flex; gap: 6px; align-items: center; padding: 10px 12px 4px; }
+.oc-select { flex: 1; min-width: 0; appearance: none; -webkit-app-region: no-drag; background: var(--surface-2); color: var(--text); border: 1px solid var(--border-soft); border-radius: 8px; font: inherit; font-size: 12.5px; font-weight: 650; padding: 7px 10px; cursor: pointer; }
+.oc-select:focus { outline: none; border-color: var(--accent); }
+.oc-icon { -webkit-app-region: no-drag; flex: none; width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--border-soft); background: var(--surface-2); color: var(--text-dim); font-size: 15px; cursor: pointer; display: grid; place-items: center; }
+.oc-icon:hover { color: var(--text); background: var(--surface-3); }
+.oc-icon.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+.oc-meta { padding: 0 13px; font-size: 11px; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.oc-progress { display: flex; align-items: center; gap: 8px; padding: 7px 13px 9px; border-bottom: 1px solid var(--border-soft); font-size: 11px; font-weight: 700; color: var(--text-dim); }
+.oc-progress .bar { flex: 1; height: 5px; border-radius: 4px; background: var(--surface-3); overflow: hidden; }
+.oc-progress .bar i { display: block; height: 100%; background: var(--match-perfect); border-radius: 4px; transition: width .3s; }
+.oc-err, .oc-warn { margin: 6px 12px; padding: 7px 10px; border-radius: 8px; font-size: 11.5px; line-height: 1.4; }
+.oc-err { background: color-mix(in srgb, var(--match-clash) 14%, transparent); color: #fecdd3; }
+.oc-warn { background: color-mix(in srgb, var(--match-boost) 13%, transparent); color: #fde68a; }
+
+.oc-decks { padding: 6px 10px; display: flex; flex-direction: column; gap: 4px; border-bottom: 1px solid var(--border-soft); }
+.oc-deck { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 9px; background: var(--surface-2); border: 1px solid var(--border-soft); }
+.oc-deck.dnp { border-color: color-mix(in srgb, var(--match-clash) 70%, transparent); background: color-mix(in srgb, var(--match-clash) 14%, var(--surface)); }
+.oc-decknum { flex: none; width: 20px; height: 20px; border-radius: 6px; background: var(--surface-3); display: grid; place-items: center; font-size: 11px; font-weight: 800; color: var(--text-dim); }
+.oc-deckmain { flex: 1; min-width: 0; }
+.oc-decktitle { font-size: 12.5px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.oc-artist { color: var(--text-dim); font-weight: 500; }
+.oc-state { flex: none; font-size: 9.5px; font-weight: 800; letter-spacing: .05em; color: var(--text-faint); }
+.oc-deck.playing .oc-state { color: var(--match-perfect); }
+.oc-deck.dnp .oc-state { color: var(--match-clash); }
+.oc-tag { display: inline-block; margin-top: 2px; font-size: 10px; font-weight: 750; letter-spacing: .02em; padding: 1px 6px; border-radius: 5px; background: var(--surface-3); color: var(--text-dim); }
+.oc-tag.must { background: color-mix(in srgb, var(--match-boost) 18%, transparent); color: #fde68a; }
+.oc-tag.dnp { background: var(--match-clash); color: #1a0508; }
+
+.oc-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 8px 14px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+.oc-scroll::-webkit-scrollbar { width: 8px; }
+.oc-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; border: 2px solid var(--bg); }
+.oc-djnotes { margin: 6px 4px 4px; padding: 8px 10px; border-radius: 8px; background: var(--surface-2); font-size: 11.5px; color: var(--text-dim); white-space: pre-wrap; }
+.oc-group { margin: 12px 6px 4px; font-size: 10px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; color: var(--text-faint); }
+.oc-sec { border-radius: 9px; margin: 2px 0; }
+.oc-sec.now { background: color-mix(in srgb, var(--accent) 9%, transparent); box-shadow: inset 3px 0 0 var(--accent); }
+.oc-sechead { -webkit-app-region: no-drag; width: 100%; display: flex; align-items: center; gap: 8px; padding: 7px 8px; border: 0; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; border-radius: 9px; }
+.oc-sechead:hover { background: var(--surface-2); }
+.oc-time { flex: none; width: 54px; font-size: 10.5px; font-weight: 750; color: var(--accent-2); font-variant-numeric: tabular-nums; }
+.oc-secname { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.oc-now { flex: none; font-size: 9px; font-weight: 900; letter-spacing: .08em; padding: 2px 5px; border-radius: 4px; background: var(--accent); color: #fff; }
+.oc-count { flex: none; font-size: 10.5px; color: var(--text-faint); font-weight: 650; }
+.oc-count .done { color: var(--match-perfect); }
+.oc-chev { flex: none; width: 10px; color: var(--text-faint); font-size: 10px; }
+.oc-secbody { padding: 0 8px 8px 70px; }
+.oc-note { font-size: 11.5px; color: var(--text-dim); margin: 2px 0 6px; white-space: pre-wrap; }
+.oc-note.dim, .oncue .dim { color: var(--text-faint); }
+.oc-ans { font-size: 11.5px; margin: 2px 0 6px; color: var(--text); }
+.oc-ans span { display: block; font-size: 10px; color: var(--text-faint); }
+.oc-songs { list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.oc-song { display: flex; align-items: center; gap: 7px; padding: 4px 6px; border-radius: 7px; }
+.oc-song.ondeck { background: var(--surface-2); }
+.oc-song.played .oc-songtitle { color: var(--text-faint); text-decoration: line-through; text-decoration-color: rgba(255,255,255,.25); }
+.oc-tick { -webkit-app-region: no-drag; flex: none; width: 18px; height: 18px; border-radius: 5px; border: 1.5px solid var(--border); background: transparent; color: #0b1a12; font-size: 12px; font-weight: 900; cursor: pointer; display: grid; place-items: center; }
+.oc-song.must .oc-tick { border-color: color-mix(in srgb, var(--match-boost) 70%, transparent); }
+.oc-song.played .oc-tick { background: var(--match-perfect); border-color: var(--match-perfect); }
+.oc-x { flex: none; width: 18px; text-align: center; font-size: 11px; }
+.oc-songmain { flex: 1; min-width: 0; }
+.oc-songtitle { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.oc-star { color: var(--match-boost); margin-right: 4px; }
+.oc-songnote { font-size: 10.5px; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.oc-file { flex: none; font-size: 9px; color: var(--match-perfect); }
+.oc-file.none { color: var(--text-faint); }
+.oc-ondeck { flex: none; font-size: 9px; font-weight: 800; color: var(--accent-2); }
+.oc-dnpbox { margin: 14px 4px 4px; padding: 9px 11px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--match-clash) 45%, transparent); background: color-mix(in srgb, var(--match-clash) 7%, var(--surface)); }
+.oc-dnpbox.empty { border-color: var(--border-soft); background: transparent; }
+.oc-dnphead { font-size: 11px; font-weight: 800; letter-spacing: .04em; color: #fda4af; display: flex; gap: 6px; }
+.oc-dnphead span { color: var(--text-faint); }
+.oc-dnpbox ul { list-style: none; margin-top: 5px; display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+.oc-dnpbox li.note { color: var(--text-dim); font-style: italic; }
+.oc-empty { margin: auto; max-width: 380px; padding: 28px 18px; text-align: center; display: flex; flex-direction: column; gap: 10px; align-items: center; color: var(--text-dim); font-size: 12.5px; line-height: 1.5; }
+.oc-empty .big { font-size: 17px; font-weight: 750; color: var(--text); }
+.oc-empty.small { padding: 18px; }
+.oc-empty .primary { appearance: none; border: 0; cursor: pointer; background: var(--accent); color: #fff; font: inherit; font-size: 12px; font-weight: 650; padding: 8px 14px; border-radius: 8px; }
+
+/* The do-not-play banner — over every view, can't be missed from the decks. */
+.dnp-banner { display: flex; align-items: center; gap: 10px; padding: 9px 14px; background: #e11d48; color: #fff; animation: dnp-pulse 1s ease-in-out infinite alternate; }
+.dnp-banner.soft { animation: none; background: #9f1239; }
+.dnp-ico { font-size: 18px; }
+.dnp-msg { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.dnp-msg b { font-size: 11px; font-weight: 900; letter-spacing: .08em; }
+.dnp-msg span { font-size: 13.5px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dnp-deck { flex: none; font-size: 11px; font-weight: 900; letter-spacing: .06em; padding: 3px 7px; border-radius: 6px; background: rgba(0,0,0,.25); }
+@keyframes dnp-pulse { from { background: #e11d48; } to { background: #9f1239; } }
+
+/* Collapsed edge pill flashes red while a do-not-play is loaded. */
+#collapsedPill.dnp { border-color: #f43f5e; animation: pill-dnp .7s ease-in-out infinite alternate; }
+#collapsedPill.dnp .pill-flame { filter: drop-shadow(0 0 10px rgba(244,63,94,.9)); }
+@keyframes pill-dnp { from { background: #4c0519; box-shadow: -6px 0 24px rgba(244,63,94,.35); } to { background: #e11d48; box-shadow: -6px 0 30px rgba(244,63,94,.8); } }
+.sp-result.ok { color: var(--match-perfect); }

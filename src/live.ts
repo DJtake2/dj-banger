@@ -12,7 +12,7 @@
 import { watch } from "node:fs";
 import type { Track, Suggestion, EngineConfig } from "./types.ts";
 import { loadLibrary, defaultSeratoDir } from "./serato/library.ts";
-import { getDecks, sessionsDir, type NowPlaying } from "./serato/history.ts";
+import { getDecks, sessionsDir, type NowPlaying, type DeckState } from "./serato/history.ts";
 import { recommend } from "./engine.ts";
 import { writeSuggestionsCrate } from "./serato/crateWriter.ts";
 import { EnergyStore } from "./analysis/energyStore.ts";
@@ -61,6 +61,9 @@ export interface LiveOptions {
   candidateFilter?: (t: Track, seed: Track) => boolean;
   /** Called on every new track. */
   onEvent: (e: LiveEvent) => void;
+  /** Called whenever a deck's track OR its loaded→played flag changes — cheap, no engine run.
+   *  On Cue uses it: a load is the do-not-play warning, a play is the must-play tick-off. */
+  onDecks?: (state: DeckState) => void;
   /** Optional logger. */
   log?: (msg: string) => void;
 }
@@ -113,6 +116,7 @@ export async function startLiveLoop(opts: LiveOptions): Promise<LiveHandle> {
   log(`Engine warm-up: ${warmupMs.toFixed(1)}ms over ${pool.length} tracks`);
 
   let lastSeedId: string | null = null;
+  let lastRawKey: string | null = null;
   let running = false;
   let pending = false;
   let debounceTimer: NodeJS.Timeout | null = null;
@@ -150,6 +154,13 @@ export async function startLiveLoop(opts: LiveOptions): Promise<LiveHandle> {
       if (state.sessionMtime != null && Date.now() - state.sessionMtime > freshMs) {
         if (lastSeedId !== "__stale__") { log("Serato history is stale; waiting for the current set"); lastSeedId = "__stale__"; }
         return;
+      }
+
+      // Deck contents + played flags → On Cue (fires even when only "played" flipped).
+      const rawKey = Object.entries(state.decks).map(([d, t]) => `${d}:${t.id}:${t.startTime ?? ""}:${t.played === false ? 0 : 1}`).sort().join("|");
+      if (rawKey !== lastRawKey) {
+        lastRawKey = rawKey;
+        try { opts.onDecks?.(state); } catch (e) { log(`onDecks failed: ${(e as Error).message}`); }
       }
 
       // Composite key of all deck tracks → recompute when EITHER deck changes.

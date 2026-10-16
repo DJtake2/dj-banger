@@ -14,7 +14,7 @@ import { parseRecords, fieldsOf, crateTrackPaths } from "./parser.ts";
 
 /** Default macOS Serato library location. */
 export function defaultSeratoDir(): string {
-  return join(homedir(), "Music", "_Serato_");
+  return process.env.BANGER_SERATO_DIR || join(homedir(), "Music", "_Serato_"); // override for tests / a copied library
 }
 
 // Serato paths are volume-relative with no leading slash ("Users/dj/track.mp3").

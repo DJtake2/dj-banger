@@ -8,7 +8,11 @@
  * BUT `adat`'s payload uses a DIFFERENT inner encoding: numeric field IDs, not ASCII tags —
  *   [u32 field-id][u32 length][payload]
  * Verified against a real session. The fields we care about:
- *   2 = absolute file path · 6 = title · 7 = artist · 8 = album · 9 = genre
+ *   2 = absolute file path · 6 = title · 7 = artist · 8 = album · 9 = genre · 15 = bpm
+ *   28 = start (load) time · 29 = end time · 31 = deck · 45 = seconds on the deck
+ *   50 = played flag — Serato writes the entry the moment a track is LOADED (0) and flips it
+ *        to 1 once it actually plays out. A track loaded and swapped away stays 0. This is
+ *        what lets On Cue warn about a do-not-play before it goes out.
  *
  * The LAST `oent` in the most-recently-modified session file is "now playing".
  */
@@ -35,6 +39,11 @@ export interface NowPlaying {
   startTime?: number;
   /** Unix time (s) the track stopped (adat field 29). Absent while it's still playing. */
   endTime?: number;
+  /** Serato counted it as played (adat field 50 / Serato 4 `played`). False = only loaded so far.
+   *  Undefined when the source doesn't say (treat as played). */
+  played?: boolean;
+  /** Seconds it spent on the deck (adat field 45). */
+  playSeconds?: number;
   /** Which session file + entry index it came from. */
   sessionFile: string;
   entryIndex: number;
@@ -145,6 +154,8 @@ function parseSessionEntries(buf: Buffer): NowPlaying[] {
               deck: fieldInt(fields, 31),
               startTime: fieldInt(fields, 28),
               endTime: fieldInt(fields, 29),
+              played: fields.has(50) ? fieldInt(fields, 50) === 1 : undefined,
+              playSeconds: fieldInt(fields, 45),
               sessionFile: "",
               entryIndex: idx,
             });
@@ -229,10 +240,15 @@ async function readV4Decks(): Promise<DeckSource> {
     db = new DatabaseSync(dbPath, { readOnly: true }) as unknown as typeof db;
     const sess = db!.prepare("SELECT id FROM history_session ORDER BY start_time DESC LIMIT 1").get() as { id: number } | undefined;
     if (!sess) return empty;
-    const rows = db!.prepare(
-      `SELECT portable_id, name, artist, key, bpm, deck, start_time FROM history_entry
-       WHERE session_id = ? AND deck IS NOT NULL AND deck != '' ORDER BY start_time DESC`,
-    ).all(sess.id) as Array<{ portable_id?: string; name?: string; artist?: string; key?: string; bpm?: number; deck?: string; start_time?: number }>;
+    type Row = { portable_id?: string; name?: string; artist?: string; key?: string; bpm?: number; deck?: string; start_time?: number; played?: number };
+    const q = (cols: string) =>
+      db!.prepare(
+        `SELECT ${cols} FROM history_entry
+         WHERE session_id = ? AND deck IS NOT NULL AND deck != '' ORDER BY start_time DESC`,
+      ).all(sess.id) as Row[];
+    const base = "portable_id, name, artist, key, bpm, deck, start_time";
+    let rows: Row[];
+    try { rows = q(`${base}, played`); } catch { rows = q(base); } // older schema without `played`
     const decks: Record<number, NowPlaying> = {};
     let maxTs = 0;
     for (const r of rows) {
@@ -250,6 +266,7 @@ async function readV4Decks(): Promise<DeckSource> {
         artist: r.artist ?? "",
         deck: d,
         startTime: ts,
+        played: r.played == null ? undefined : Number(r.played) === 1,
         sessionFile: dbPath,
         entryIndex: 0,
       };
@@ -337,4 +354,30 @@ export async function getDecks(seratoDir = defaultSeratoDir()): Promise<DeckStat
   // re-writes). Fall back to file mtime when no play timestamp is present.
   const sessionMtime = chosen.maxTs > 0 ? chosen.maxTs * 1000 : chosen.mtime;
   return { decks: chosen.decks, activeDeck, sessionFile: chosen.file, sessionMtime };
+}
+
+/**
+ * Every entry Serato logged since `sinceSec` (unix seconds), across the recent session files —
+ * tonight's set, oldest first. Used to tick off must-plays that went out before On Cue started.
+ */
+export async function readRecentEntries(sinceSec: number, seratoDir = defaultSeratoDir()): Promise<NowPlaying[]> {
+  const dir = sessionsDir(seratoDir);
+  let files: string[];
+  try {
+    files = (await readdir(dir)).filter((f) => f.endsWith(".session"));
+  } catch {
+    return [];
+  }
+  const out: NowPlaying[] = [];
+  for (const f of files) {
+    const file = join(dir, f);
+    try {
+      const s = await stat(file);
+      if (s.mtimeMs < sinceSec * 1000) continue; // nothing written to it since then
+      for (const e of parseSessionEntries(await readFile(file))) {
+        if ((e.startTime ?? 0) >= sinceSec) { e.sessionFile = file; out.push(e); }
+      }
+    } catch { /* skip unreadable */ }
+  }
+  return out.sort((a, b) => (a.startTime ?? 0) - (b.startTime ?? 0));
 }

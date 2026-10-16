@@ -443,6 +443,9 @@ el("nav").addEventListener("click", (e) => {
   currentView = btn.dataset.view;
   el("homeView").hidden = currentView !== "home";
   el("chartsView").hidden = currentView !== "charts";
+  el("oncueView").hidden = currentView !== "oncue";
+  window.onViewChange?.(currentView); // On Cue (oncue.js) moves its panel between tab and dock
+  if (currentView === "oncue") { el("deckTabs").hidden = true; return; }
   if (currentView === "charts") { el("deckTabs").hidden = true; loadCharts(); }
   else render(); // home → render() re-establishes deck tabs if narrow
 });
@@ -853,5 +856,6 @@ function connect() {
   });
   es.addEventListener("decks", (ev) => { lastDecks = JSON.parse(ev.data); render(); });
   es.addEventListener("streaming", (ev) => renderStreaming(JSON.parse(ev.data)));
+  es.addEventListener("oncue", (ev) => window.onOncue?.(JSON.parse(ev.data))); // oncue.js
 }
 connect();

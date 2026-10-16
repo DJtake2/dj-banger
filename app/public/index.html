@@ -44,6 +44,7 @@
       <div class="nav" id="nav">
         <button class="navtab on" data-view="home">Home</button>
         <button class="navtab" data-view="charts">Charts</button>
+        <button class="navtab" data-view="oncue" id="oncueTab">On Cue <span class="tab-badge" id="oncueTabBadge" hidden></span></button>
       </div>
       <div class="status">
         <span id="statusDot" class="dot off"></span>
@@ -74,6 +75,13 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18" stroke-linecap="round"/></svg>
         </button>
       </div>
+    </div>
+
+    <!-- On Cue: a do-not-play is loaded. Shown over every view, before it goes out. -->
+    <div class="dnp-banner" id="dnpBanner" hidden role="alert">
+      <span class="dnp-ico" aria-hidden="true">⛔</span>
+      <div class="dnp-msg"><b id="dnpBannerHead">DO NOT PLAY</b><span id="dnpBannerText"></span></div>
+      <span class="dnp-deck" id="dnpBannerDeck"></span>
     </div>
 
     <!-- Settings dropdown menu (matches the reference app's gear menu) -->
@@ -118,12 +126,24 @@
 
     <!-- HOME view: two-column deck split (side by side when wide, tabbed when narrow) -->
     <div class="view" id="homeView">
+      <div class="home-split">
+      <aside class="oncue-dock" id="oncueDock" hidden></aside>
       <div class="decks-wrap" id="decksWrap">
         <div class="empty" id="empty">
           <div class="spinner"></div>
           <div class="big">Waiting for Serato…</div>
           <div>Play a track on a deck and suggestions appear here.</div>
         </div>
+      </div>
+      </div>
+    </div>
+
+    <!-- ON CUE view: tonight's plan from the CRM (also docks beside the decks on Home) -->
+    <div class="view" id="oncueView" hidden>
+      <div class="oncue-home" id="oncueHome">
+        <section class="oncue" id="oncuePanel">
+          <div class="empty"><div class="big">On Cue</div><div>Connecting to your CRM…</div></div>
+        </section>
       </div>
     </div>
 
@@ -189,6 +209,18 @@
           </div>
 
           <div class="sync">
+            <div class="sync-head">On Cue · CRM <span class="sync-status" id="ocStatus">not connected</span></div>
+            <p class="hint">Tonight's plan beside your decks: must-plays tick off as you play them, and a do-not-play is flagged the moment it's loaded. In the CRM open Settings → Music Planner → On Cue and copy the address and key.</p>
+            <input id="ocUrl" type="text" spellcheck="false" autocomplete="off" placeholder="CRM address — https://crm.djtake2.com" />
+            <input id="ocKey" type="password" spellcheck="false" autocomplete="off" placeholder="On Cue key — oc1.…" />
+            <div class="sp-actions">
+              <button class="ghostbtn" id="ocDisconnect">Disconnect</button>
+              <button class="primary" id="ocSave">Save &amp; Connect</button>
+            </div>
+            <div class="sp-result" id="ocResult" hidden></div>
+          </div>
+
+          <div class="sync">
             <div class="sync-head">Do Not Play <span class="sync-status" id="dnpCount"></span></div>
             <p class="hint">One per line — an artist, a title, or “Artist - Title”. Matching tracks never appear in suggestions, and the deck warns if one is playing.</p>
             <textarea id="dnpText" spellcheck="false" rows="5" placeholder="Cotton Eye Joe&#10;Nickelback&#10;Baby Shark"></textarea>
@@ -229,5 +261,6 @@
   </div>
 
   <script src="app.js"></script>
+  <script src="oncue.js"></script>
 </body>
 </html>

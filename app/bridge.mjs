@@ -27,11 +27,13 @@ import { DeezerSimilarity } from "../src/deezerSimilarity.ts";
 import { parseDoNotPlay, matchDoNotPlay, isDoNotPlay } from "../src/dnp.ts";
 import { keyCompatibility } from "../src/camelot.ts";
 import { writeSuggestionsCrate } from "../src/serato/crateWriter.ts";
+import { OnCue } from "../src/oncue/onCue.ts";
 import { streamingRecommend, streamingStatus, streamingCharts, setSpotifyCreds, testSpotifyCreds, setTidalCreds, testTidalCreds, setActiveService, getActiveService } from "../src/streaming/index.ts";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = process.env.BANGER_PUBLIC || join(__dir, "public");
 const PORT = Number(process.env.PORT || 4177);
+const ALLOWED_ORIGINS = new Set(["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost", `http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`]);
 
 const MIME = { ".html": "text/html", ".css": "text/css", ".js": "text/javascript", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".ico": "image/x-icon" };
 
@@ -102,7 +104,7 @@ const CONFIG_PATH = process.env.BANGER_CONFIG || join(__dirname_root(), ".config
 function __dirname_root() {
   return join(dirname(fileURLToPath(import.meta.url)), "..");
 }
-let appConfig = { spotify: { clientId: "", clientSecret: "" }, tidal: { clientId: "", clientSecret: "" }, streamingService: "spotify", doNotPlay: "" };
+let appConfig = { spotify: { clientId: "", clientSecret: "" }, tidal: { clientId: "", clientSecret: "" }, streamingService: "spotify", doNotPlay: "", oncue: { crmUrl: "", key: "", eventId: "" } };
 let dnpEntries = [];               // parsed Do-Not-Play list (one entry per line)
 let artistAffinity = EMPTY_AFFINITY; // co-play index; rebuilt from history on startup
 const deezerSim = new DeezerSimilarity(); // artist-similarity neighborhood (Deezer, warmed per seed)
@@ -130,6 +132,29 @@ function applyConfig() {
 const FFMPEG = process.env.FFMPEG_PATH || "/opt/homebrew/bin/ffmpeg";
 const CACHE_ROOT = process.env.BANGER_CACHE ? dirname(process.env.BANGER_CACHE) : join(__dirname_root(), ".cache");
 const ART_DIR = join(CACHE_ROOT, "art");
+
+// ---- On Cue: tonight's plan from the CRM beside the decks (src/oncue) ----------------------
+let oncue = null;       // created in main() once the config is loaded
+let oncueSnap = null;   // last snapshot, replayed to new SSE clients
+let oncueDnp = () => false; // tonight's do-not-play list, as a track predicate for suggestions
+/** The snapshot minus anything secret (the key never leaves the bridge). */
+function oncueWire(s) {
+  return s;
+}
+function onOncueChange(s) {
+  const prevPlan = oncueSnap?.plan?.generatedAt;
+  const prevEvent = oncueSnap?.eventId;
+  oncueSnap = s;
+  broadcast("oncue", oncueWire(s));
+  if (s.plan?.generatedAt !== prevPlan || s.eventId !== prevEvent) {
+    oncueDnp = oncue ? oncue.dnpFilter() : () => false;
+    if (loopHandle) broadcastDecks("live", true); // drop tonight's do-not-plays from suggestions
+  }
+  if ((s.eventId || "") !== (appConfig.oncue?.eventId || "")) {
+    appConfig.oncue = { ...appConfig.oncue, eventId: s.eventId || "" };
+    void saveConfig();
+  }
+}
 const artMisses = new Set(); // ids we've already found to have no embedded art (skip re-running ffmpeg)
 
 /** Extract the first embedded image from `absPath` to `out` (jpeg, ~200px). Resolves true on success. */
@@ -418,7 +443,7 @@ function seedInfo(seed) {
     energy: seed.energy ?? null,
     energyReal: seed.raw?.energySource === "audio",
     // Non-null when the playing track is on the Do-Not-Play list (the matched entry).
-    dnp: dnpEntries.length ? matchDoNotPlay(dnpEntries, seed) : null,
+    dnp: (dnpEntries.length ? matchDoNotPlay(dnpEntries, seed) : null) ?? (oncueDnp(seed) ? "Tonight's do-not-play list" : null),
   };
 }
 
@@ -430,7 +455,7 @@ function rankDeck(deck, seed) {
   const t0 = performance.now();
   // Never suggest a track on the Do-Not-Play list.
   const cands = loopHandle.pool.filter(
-    (tt) => passesDeckFilter(tt, seed, f) && !(dnpEntries.length && isDoNotPlay(dnpEntries, tt)),
+    (tt) => passesDeckFilter(tt, seed, f) && !(dnpEntries.length && isDoNotPlay(dnpEntries, tt)) && !oncueDnp(tt),
   );
   const suggestions = recommend({ seed }, cands, engineConfig);
   return {
@@ -579,11 +604,13 @@ function emitAllStreaming() {
 
 async function main() {
   await loadConfig(); // apply saved Spotify creds before anything queries streaming
+  oncue = new OnCue(appConfig.oncue || {}, { cacheDir: CACHE_ROOT, onChange: onOncueChange, log: (m) => console.log("·", m) });
   console.log("Starting engine…");
   loopHandle = await startLiveLoop({
     config: engineConfig,
     writeCrate: false,
     log: (m) => console.log("·", m),
+    onDecks: (state) => oncue?.onDecks(state),
     onEvent: (e) => {
       deckSeeds = {};
       for (const d of e.decks || []) if (d.seed) deckSeeds[d.deck] = d.seed;
@@ -593,6 +620,8 @@ async function main() {
     },
   });
   console.log(`Engine ready: ${loopHandle.librarySize} tracks.`);
+  if (oncue.configured) void oncue.loadEvents();
+  else onOncueChange(oncue.snapshot());
 
   // Build the artist co-play index from play history, then wire it into the scorer so
   // suggestions favor artists this DJ actually mixes together. Non-fatal if history is absent.
@@ -623,7 +652,11 @@ async function main() {
 
     // CORS: the packaged app's window is served from tauri://localhost and talks to this
     // sidecar cross-origin, so allow it (and answer preflight requests).
-    res.setHeader("Access-Control-Allow-Origin", "*");
+    // Only our own window (Tauri) or this page may read responses cross-origin — On Cue serves a
+    // client's plan, so a random website open in the browser mustn't be able to fetch it.
+    const origin = req.headers.origin;
+    if (origin && ALLOWED_ORIGINS.has(origin)) { res.setHeader("Access-Control-Allow-Origin", origin); res.setHeader("Vary", "Origin"); }
+    else if (origin && url.pathname.startsWith("/oncue")) { res.writeHead(403).end(); return; }
     res.setHeader("Access-Control-Allow-Headers", "content-type");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     if (req.method === "OPTIONS") { res.writeHead(204).end(); return; }
@@ -647,6 +680,7 @@ async function main() {
         },
       });
       if (lastPayload) sse(res, "decks", lastPayload);
+      if (oncueSnap) sse(res, "oncue", oncueWire(oncueSnap));
       req.on("close", () => clients.delete(res));
       return;
     }
@@ -871,6 +905,32 @@ async function main() {
         }
       });
       return;
+    }
+
+    // ---- On Cue ----
+    if (url.pathname.startsWith("/oncue/") && req.method === "POST") {
+      const body = await new Promise((r) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => r(b)); });
+      const json = (code, obj) => res.writeHead(code, { "content-type": "application/json" }).end(JSON.stringify(obj));
+      try {
+        const p = JSON.parse(body || "{}");
+        if (url.pathname === "/oncue/settings") {
+          const next = {};
+          if (typeof p.crmUrl === "string") next.crmUrl = p.crmUrl.trim();
+          if (typeof p.key === "string" && p.key.trim()) next.key = p.key.trim();
+          if (p.disconnect) { next.crmUrl = ""; next.key = ""; next.eventId = ""; }
+          appConfig.oncue = { ...appConfig.oncue, ...next };
+          await saveConfig();
+          await oncue.configure(next);
+          return json(200, { ok: true, error: oncue.snapshot().error });
+        }
+        if (url.pathname === "/oncue/events") { await oncue.loadEvents(); return json(200, { ok: true }); }
+        if (url.pathname === "/oncue/select") { await oncue.select(String(p.eventId || "")); return json(200, { ok: true }); }
+        if (url.pathname === "/oncue/refresh") { await oncue.refreshPlan(); return json(200, { ok: true }); }
+        if (url.pathname === "/oncue/tick") { oncue.toggle(String(p.songId || ""), !!p.on); return json(200, { ok: true }); }
+        return json(404, { ok: false });
+      } catch (e) {
+        return json(400, { ok: false, error: String(e.message || e) });
+      }
     }
 
     // Return to live decks (drop any prep slot).
