@@ -143,6 +143,7 @@ test("On Cue: picks today's event, ticks must-plays on PLAY, alerts on a LOADED 
   await oc.configure({ crmUrl: "https://crm.example.com/", key: "oc1.k.s" });
   oc.stop();
   assert.equal(snap!.eventId, "ev1", "today's event chosen on its own");
+  assert.equal(oc.refreshDelayMs, 5 * 60 * 1000, "event day: re-read the plan every 5 minutes");
   assert.ok(snap!.played["s-fd"], "first dance ticked from tonight's history");
   assert.equal(snap!.played["s-sep"], undefined, "a 10-second load isn't a play");
   assert.ok(snap!.played["s-mb"], "a play the CRM already knew about stays ticked");
@@ -205,6 +206,18 @@ test("On Cue: offline uses the cached plan; nothing is reported on other days", 
   await tick();
   assert.equal(posts.length, 0, "a week early: tick locally, don't touch the CRM");
 
+  // A week early: no 5-minute polling — the CRM's database stays asleep.
+  assert.equal(a.refreshDelayMs, 30 * 60 * 1000);
+  const calls = { n: 0 };
+  const counting = (async (u: string, i?: RequestInit) => { calls.n++; return f(u, i); }) as typeof fetch;
+  const idle = new OnCue({ eventId: "ev1" }, { cacheDir, seratoDir, fetch: counting, now: () => now, onChange: () => {} });
+  await idle.configure({ crmUrl: "https://crm.example.com", key: "oc1.k.s" });
+  const afterStart = calls.n;
+  await idle.wake();
+  await idle.wake();
+  idle.stop();
+  assert.equal(calls.n, afterStart, "same day, not event day: a wake-up makes no CRM call");
+
   const down = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
   let snap: OnCueSnapshot | null = null;
   const b = new OnCue({ eventId: "ev1" }, { cacheDir, seratoDir, fetch: down, now: () => now, onChange: (s) => (snap = s) });
@@ -221,4 +234,20 @@ test("On Cue: a bad key says so", async () => {
   await oc.configure({ crmUrl: "https://crm.example.com", key: "wrong" });
   oc.stop();
   assert.match(snap!.error ?? "", /didn't accept/);
+});
+
+test("On Cue: a new day re-reads the event list once (picks up that day's gig)", async () => {
+  let now = new Date("2026-10-15T15:00:00");
+  const { f } = fakeCrm(plan("2026-10-16"));
+  const urls: string[] = [];
+  const counting = (async (u: string, i?: RequestInit) => { urls.push(String(u)); return f(u, i); }) as typeof fetch;
+  const oc = new OnCue({}, { cacheDir: await mkdtemp(join(tmpdir(), "oncue-cache-")), seratoDir: await seratoWith([]), fetch: counting, now: () => now, onChange: () => {} });
+  await oc.configure({ crmUrl: "https://crm.example.com", key: "oc1.k.s" });
+  const n = urls.length;
+  await oc.wake();
+  assert.equal(urls.length, n, "same day: nothing");
+  now = new Date("2026-10-16T09:00:00");
+  await oc.wake();
+  oc.stop();
+  assert.ok(urls.slice(n).some((u) => u.endsWith("/api/oncue/events")), "new day: the event list again");
 });

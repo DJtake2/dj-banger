@@ -116,7 +116,14 @@ export interface OnCueOptions {
   now?: () => Date;
 }
 
+/**
+ * How often the plan is re-read from the CRM: every 5 minutes on event day only. Any other day
+ * Banger may sit open for a week — polling would keep the CRM's database (Neon, billed by compute
+ * time) awake around the clock — so then it's a local check every 30 minutes that only calls the
+ * CRM once a new day starts (to pick up that day's event). ↻ in the panel still reloads any time.
+ */
 const PLAN_REFRESH_MS = 5 * 60 * 1000;
+const IDLE_CHECK_MS = 30 * 60 * 1000;
 /** How often tonight's history is re-read (Serato rewrites older entries' played flags in place). */
 const TICK_MS = 15 * 1000;
 /**
@@ -135,6 +142,11 @@ export function confirmedPlay(e: Pick<NowPlaying, "played" | "startTime" | "endT
   return nowSec - e.startTime >= ON_AIR_SEC;
 }
 
+/** "2026-10-17" in the Mac's own time zone. */
+function localDay(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 export class OnCue {
   private settings: OnCueSettings;
   private events: OnCueEvent[] = [];
@@ -151,6 +163,8 @@ export class OnCue {
   private manualOff = new Set<string>();
   private reported = new Set<string>(); // songIds the CRM has stamped as played
   private tonight: NowPlaying[] = [];
+  /** The Mac-local day the event list was last fetched — a new day fetches it again. */
+  private eventsDay = "";
   private tickTimer: NodeJS.Timeout | null = null;
   private lastReportKey = "";
   private refreshTimer: NodeJS.Timeout | null = null;
@@ -222,6 +236,7 @@ export class OnCue {
 
   /** The booked events; picks today's on its own when nothing is chosen yet. */
   async loadEvents(): Promise<void> {
+    this.eventsDay = localDay(this.now());
     try {
       const { events } = await this.api<{ events: OnCueEvent[] }>("/api/oncue/events");
       this.events = events;
@@ -235,7 +250,10 @@ export class OnCue {
     const todays = this.events.find((e) => e.today && e.hasPlan);
     if (!keep && todays) await this.select(todays.id);
     else if (this.settings.eventId) await this.refreshPlan();
-    else this.emit();
+    else {
+      this.emit();
+      this.scheduleRefresh();
+    }
   }
 
   async select(eventId: string): Promise<void> {
@@ -275,13 +293,31 @@ export class OnCue {
         this.reported.add(s.id);
       }
     }
-    this.refreshTimer = setTimeout(() => void this.refreshPlan(), PLAN_REFRESH_MS);
-    this.refreshTimer.unref?.();
+    this.scheduleRefresh();
     if (!this.tickTimer) {
       this.tickTimer = setInterval(() => { if (this.plan) void this.update(); }, TICK_MS);
       this.tickTimer.unref?.();
     }
     await this.update();
+  }
+
+  /** The wait before the next CRM read (see PLAN_REFRESH_MS). */
+  get refreshDelayMs(): number {
+    return this.isEventNight() ? PLAN_REFRESH_MS : IDLE_CHECK_MS;
+  }
+
+  private scheduleRefresh() {
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    if (!this.configured) return;
+    this.refreshTimer = setTimeout(() => void this.wake(), this.refreshDelayMs);
+    this.refreshTimer.unref?.();
+  }
+
+  /** Timer fired: a new day re-reads the event list; event day re-reads the plan; else nothing. */
+  async wake(): Promise<void> {
+    if (localDay(this.now()) !== this.eventsDay) return this.loadEvents();
+    if (this.isEventNight()) return this.refreshPlan();
+    this.scheduleRefresh();
   }
 
   stop() {
@@ -474,9 +510,8 @@ export class OnCue {
     const date = this.plan?.event.date;
     if (!date) return false;
     const now = this.now();
-    const day = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    if (day(now) === date) return true;
-    return now.getHours() < 6 && day(new Date(now.getTime() - 86400000)) === date;
+    if (localDay(now) === date) return true;
+    return now.getHours() < 6 && localDay(new Date(now.getTime() - 86400000)) === date;
   }
 
   // ---- snapshot -------------------------------------------------------------------

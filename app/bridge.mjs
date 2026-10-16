@@ -674,6 +674,18 @@ function emitAllStreaming() {
   for (const [d, seed] of Object.entries(deckSeeds)) void emitStreamingForDeck(Number(d), seed);
 }
 
+// Launched by the app as its engine: leave with it. If the app is force-quit or crashes, this
+// process is re-parented to launchd (ppid 1) — exit instead of holding port 4177 for the next launch.
+if (process.env.BANGER_SIDECAR === "1") {
+  const parent = process.ppid;
+  setInterval(() => {
+    if (process.ppid !== parent || process.ppid === 1) {
+      console.log("Banger app is gone — engine exiting");
+      process.exit(0);
+    }
+  }, 2000).unref();
+}
+
 async function main() {
   await loadConfig(); // apply saved Spotify creds before anything queries streaming
   oncue = new OnCue(appConfig.oncue || {}, { cacheDir: CACHE_ROOT, onChange: onOncueChange, log: (m) => console.log("·", m) });

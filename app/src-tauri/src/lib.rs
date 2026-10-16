@@ -7,6 +7,22 @@
 // The frontend talks to it over http://localhost:4177 (CORS-enabled) and the drag plugin
 // (window.__TAURI__.drag) loads a file onto a Serato deck.
 
+/// The engine process, so it can be stopped when the app quits. Without this the Node bridge
+/// outlived the window, kept port 4177, and the next launch (or the relaunch after an
+/// auto-update) talked to the OLD engine. The bridge also exits by itself if it's orphaned
+/// (crash / force-quit) — see BANGER_SIDECAR in bridge.mjs.
+static SIDECAR: std::sync::Mutex<Option<std::process::Child>> = std::sync::Mutex::new(None);
+
+fn stop_sidecar() {
+    if let Ok(mut guard) = SIDECAR.lock() {
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+            println!("[banger] sidecar stopped");
+        }
+    }
+}
+
 #[cfg(not(debug_assertions))]
 fn spawn_sidecar(app: &tauri::App) {
     use std::os::unix::fs::PermissionsExt;
@@ -39,9 +55,15 @@ fn spawn_sidecar(app: &tauri::App) {
         .env("BANGER_CONFIG", format!("{home}/dj-banger/.config.json"))
         .env("FFMPEG_PATH", "/opt/homebrew/bin/ffmpeg")
         .env("PATH", path)
+        .env("BANGER_SIDECAR", "1")
         .spawn()
     {
-        Ok(_) => println!("[banger] sidecar started"),
+        Ok(child) => {
+            println!("[banger] sidecar started (pid {})", child.id());
+            if let Ok(mut guard) = SIDECAR.lock() {
+                *guard = Some(child);
+            }
+        }
         Err(e) => eprintln!("[banger] sidecar spawn failed: {e}"),
     }
 }
@@ -104,6 +126,11 @@ pub fn run() {
             spawn_sidecar(_app);
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Banger");
+        .build(tauri::generate_context!())
+        .expect("error while building Banger")
+        .run(|_app, event| {
+            if let tauri::RunEvent::Exit = event {
+                stop_sidecar();
+            }
+        });
 }
