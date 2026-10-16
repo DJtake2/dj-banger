@@ -722,6 +722,7 @@ async function main() {
     artistAffinity = await loadArtistAffinity(loopHandle.pool, undefined, 6, sessions);
     playIndex = buildPlayIndex(sessions);
     engineConfig.lastPlayed = (tr) => playIndex.last(tr.id);
+    engineConfig.playCount = (tr) => playIndex.count(tr.id); // crowd-tested songs count as hits
     console.log(`Play history: ${playIndex.size} tracks played before`);
     await deezerSim.load(join(CACHE_ROOT, "deezer-artists.json")); // persisted + bundled seed
     // Blend: Deezer "cultural association" (Camila→Taylor/Dua) when we've warmed the seed's

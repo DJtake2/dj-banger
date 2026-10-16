@@ -99,6 +99,21 @@ export interface EngineConfig {
   gems?: boolean;
   /** "Now" for the gems maths (unix seconds). Default: the clock. */
   nowSec?: number;
+  /**
+   * Variety: at most this many picks per artist in the list ("feat." / "&" / "x" credits count
+   * as the artist too). Default 1 — related artists, not five songs by one. Extra picks by an
+   * artist only come back to fill a list that would otherwise be too short.
+   */
+  maxPerArtist?: number;
+  /** Leave the seed's own artist out (they're on now). Default true; same backfill rule. */
+  excludeSeedArtist?: boolean;
+  /** Skip instrumentals / acapellas / DJ-tool versions unless the seed is one. Default true. */
+  skipInstrumentals?: boolean;
+  /** How hard popularity pulls (0 = ignored). Score × (1 − w/2 + w·pop). Default 0.9. */
+  popularityWeight?: number;
+
+  /** How many times this DJ has played a track — a crowd-tested song counts as popular. */
+  playCount?: (t: Track) => number;
 }
 
 export const DEFAULT_CONFIG: EngineConfig = {

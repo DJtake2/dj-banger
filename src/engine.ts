@@ -10,6 +10,27 @@ import type { Track, EngineConfig, Suggestion, MixContext } from "./types.ts";
 import { DEFAULT_CONFIG } from "./types.ts";
 import { keyCompatibility, keyRelation } from "./camelot.ts";
 import { sameSong } from "./dedupe.ts";
+import { splitArtists } from "./affinity.ts";
+
+// Not a song for the floor: instrumentals, acapellas, DJ tools and bare beats.
+const INSTRUMENTAL_RE = /\b(inst|instr|instru|instrumental|acapella|acappella|a cappella|acap|dj tool|beat only|drum tool)\b/i;
+
+/** Credited artists, normalised ("Drake feat. Future" → drake, future). */
+function credits(artist?: string): string[] {
+  return splitArtists(artist).map((a) => a.replace(/^the\s+/, "").replace(/[^a-z0-9$]+/g, " ").trim()).filter(Boolean);
+}
+
+/**
+ * How popular a track is, 0..1: the world's view (Deezer rank) or this DJ's crowds (how often
+ * they've played it), whichever says more. Undefined when neither knows.
+ */
+export function popularityOf(t: Track, playCount?: (t: Track) => number): number | undefined {
+  const world = typeof t.popularity === "number" ? t.popularity : undefined;
+  const plays = playCount ? playCount(t) : 0;
+  const crowd = plays > 0 ? Math.min(1, 0.55 + 0.15 * Math.log2(plays)) : undefined; // 1 play .55, 2 .7, 4 .85, 8+ 1
+  if (world == null) return crowd;
+  return crowd == null ? world : Math.max(world, crowd);
+}
 
 /** Score BPM proximity 0..1, honouring tolerance and optional half/double-time. */
 export function bpmScore(seedBpm: number | undefined, candBpm: number | undefined, cfg: EngineConfig): {
@@ -136,6 +157,9 @@ export function recommend(
   if (!seed.genre) { w.artist += w.genre; w.genre = 0; }
   const wsum = w.key + w.bpm + w.energy + w.genre + w.artist || 1;
   const seedLocale = trackLocale(seed); // e.g. "es" → keep suggesting same-language music
+  const skipInst = (cfg.skipInstrumentals ?? true) && !INSTRUMENTAL_RE.test(seed.title);
+
+  const seedCredits = new Set(credits(seed.artist));
 
   const out: Suggestion[] = [];
   for (const t of pool) {
@@ -144,6 +168,7 @@ export function recommend(
     if (ctx.candidatePoolIds && !ctx.candidatePoolIds.has(t.id)) continue;
     // Skip other edits of the song that's already playing.
     if (cfg.excludeSeedVersions && sameSong(seed, t)) continue;
+    if (skipInst && INSTRUMENTAL_RE.test(t.title)) continue;
 
     const kScore = keyCompatibility(seed.key, t.key);
     const b = bpmScore(seed.bpm, t.bpm, cfg);
@@ -183,10 +208,14 @@ export function recommend(
     // World popularity (Deezer global rank, 0..1) — a big factor, like the reference API: a
     // crowd-pleasing hit outranks a deep cut when both fit. Neutral (no effect) when unknown.
     // With a familiarity target the closest to it wins instead (deep cuts ↔ hits).
-    const pop = typeof t.popularity === "number" ? t.popularity : 0.5;
+    const pop = popularityOf(t, cfg.playCount) ?? 0.5;
     if (cfg.familiarity != null) score *= 1.25 - 0.5 * Math.abs(pop - cfg.familiarity);
     else if (vibe === "curveball") score *= 0.7 + 0.6 * pop; // a curveball the room still knows
-    else score *= 0.78 + 0.44 * pop; // pop 1 → ×1.22, unknown → ×1.0, obscure → ×0.78
+    else {
+      // Hits lead. With the default w = 0.9: pop 1 → ×1.45, unknown (0.5) → ×1.0, obscure → ×0.55.
+      const w = cfg.popularityWeight ?? 0.9;
+      score *= 1 - w / 2 + w * pop;
+    }
 
     // Curveball: a different era is part of the surprise.
     if (vibe === "curveball" && seed.year && t.year && Math.abs(seed.year - t.year) >= 10) score *= 1.12;
@@ -201,7 +230,7 @@ export function recommend(
     }
 
     // Soft penalty for repeating the seed's artist (avoid three Drake tracks in a row).
-    if (cfg.sameArtistPenalty > 0 && t.artist && seed.artist && t.artist.toLowerCase() === seed.artist.toLowerCase()) {
+    if (cfg.sameArtistPenalty > 0 && seedCredits.size && credits(t.artist).some((a) => seedCredits.has(a))) {
       score *= 1 - cfg.sameArtistPenalty;
     }
 
@@ -231,15 +260,36 @@ export function recommend(
   // matching was O(n²) per artist and cost seconds; we only ever show `limit`, so we never need to
   // look past the top handful of distinct songs. Sorted desc → once a score drops below the floor,
   // everything after it does too, so we break.
+  //
+  // Variety: one pick per artist (credits count), none by the seed's own artist. Anything held back
+  // for that reason waits in `spare` and only fills in if the list would otherwise be too short.
   const floor = out.length ? out[0].score * cfg.minScoreRatio : 0;
+  const maxPer = cfg.maxPerArtist ?? 1;
+  const excludeSeed = cfg.excludeSeedArtist ?? true;
+  const perArtist = new Map<string, number>();
   const kept: Suggestion[] = [];
+  const spare: Suggestion[] = [];
   for (const item of out) {
     // Stop once we're past the floor — UNLESS we haven't hit the minimum yet (a very sparse seed
     // still gets a few options rather than a lone result).
     if (item.score < floor && kept.length >= cfg.minResults) break;
-    if (cfg.dedupeVersions && kept.some((k) => sameSong(k.track, item.track))) continue;
+    if (cfg.dedupeVersions && (kept.some((k) => sameSong(k.track, item.track)) || spare.some((k) => sameSong(k.track, item.track)))) continue;
+    const who = credits(item.track.artist);
+    const crowded = (excludeSeed && who.some((a) => seedCredits.has(a))) || who.some((a) => (perArtist.get(a) ?? 0) >= maxPer);
+    if (crowded) {
+      if (spare.length < cfg.limit) spare.push(item);
+      continue;
+    }
+    for (const a of who) perArtist.set(a, (perArtist.get(a) ?? 0) + 1);
     kept.push(item);
     if (kept.length >= cfg.limit) break;
+  }
+  if (kept.length < cfg.minResults) {
+    for (const s of spare) {
+      if (kept.length >= cfg.minResults) break;
+      kept.push(s);
+    }
+    kept.sort((x, y) => y.score - x.score);
   }
   return kept;
 }
