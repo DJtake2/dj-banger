@@ -16,7 +16,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { DeckState, NowPlaying } from "../serato/history.ts";
 import { readRecentEntries } from "../serato/history.ts";
-import { findSong, matchNote, noteFragments, type MatchHow } from "./match.ts";
+import { findAllSongs, findSong, matchNote, noteFragments, type MatchHow } from "./match.ts";
 
 export interface OnCueEvent {
   id: string;
@@ -74,7 +74,7 @@ export interface DeckMatch {
   title: string;
   artist: string;
   absPath: string;
-  /** False while the track is only loaded; true once Serato counts it as played. */
+  /** True once it has really gone out (see confirmedPlay); false while it may only be loaded. */
   played: boolean;
   /** The plan song it is, if any. */
   songId: string | null;
@@ -117,6 +117,23 @@ export interface OnCueOptions {
 }
 
 const PLAN_REFRESH_MS = 5 * 60 * 1000;
+/** How often tonight's history is re-read (Serato rewrites older entries' played flags in place). */
+const TICK_MS = 15 * 1000;
+/**
+ * When does a track count as played? Serato 3 writes the entry the moment a track is LOADED and
+ * marks it played=1 right away; only later — when it leaves the deck without really playing —
+ * does it rewrite the flag to 0. So "played" means: still flagged played AND either it finished
+ * after at least MIN_PLAY_SEC on the deck, or it has been on the deck for ON_AIR_SEC already
+ * (both a minute: the real set showed a 41-second load-and-swap still flagged played).
+ */
+const MIN_PLAY_SEC = 60; // same bar as on air: Serato can leave a 41s load-and-swap flagged played for minutes
+const ON_AIR_SEC = 60;
+
+export function confirmedPlay(e: Pick<NowPlaying, "played" | "startTime" | "endTime">, nowSec: number): boolean {
+  if (e.played === false || !e.startTime) return false;
+  if (e.endTime) return e.endTime - e.startTime >= MIN_PLAY_SEC;
+  return nowSec - e.startTime >= ON_AIR_SEC;
+}
 
 export class OnCue {
   private settings: OnCueSettings;
@@ -125,10 +142,16 @@ export class OnCue {
   private offline = false;
   private error: string | null = null;
   private decks: DeckMatch[] = [];
+  /** songId → when played: the merge of what the CRM knew, tonight's history and the DJ's ticks. */
   private played = new Map<string, string>();
+  private crmPlayed = new Map<string, string>();
+  private autoPlayed = new Map<string, string>();
+  private manualOn = new Map<string, string>();
   /** Songs the DJ un-ticked by hand — tonight's history doesn't re-tick them. */
   private manualOff = new Set<string>();
-  private reported = new Set<string>(); // songIds whose play the CRM has been told about
+  private reported = new Set<string>(); // songIds the CRM has stamped as played
+  private tonight: NowPlaying[] = [];
+  private tickTimer: NodeJS.Timeout | null = null;
   private lastReportKey = "";
   private refreshTimer: NodeJS.Timeout | null = null;
   private lastDeckState: DeckState | null = null;
@@ -220,6 +243,9 @@ export class OnCue {
       this.settings.eventId = eventId;
       this.plan = null;
       this.played.clear();
+      this.crmPlayed.clear();
+      this.autoPlayed.clear();
+      this.manualOn.clear();
       this.manualOff.clear();
       this.reported.clear();
       this.lastReportKey = "";
@@ -243,23 +269,25 @@ export class OnCue {
       this.offline = !!this.plan;
     }
     if (this.plan) {
-      for (const s of this.allSongs()) if (s.playedAt && !this.manualOff.has(s.id)) {
-        this.played.set(s.id, s.playedAt);
+      this.crmPlayed.clear();
+      for (const s of this.allSongs()) if (s.playedAt) {
+        this.crmPlayed.set(s.id, s.playedAt);
         this.reported.add(s.id);
       }
-      await this.replayTonight();
     }
     this.refreshTimer = setTimeout(() => void this.refreshPlan(), PLAN_REFRESH_MS);
     this.refreshTimer.unref?.();
-    if (this.lastDeckState) this.onDecks(this.lastDeckState);
-    else {
-      this.emit();
-      void this.report([]);
+    if (!this.tickTimer) {
+      this.tickTimer = setInterval(() => { if (this.plan) void this.update(); }, TICK_MS);
+      this.tickTimer.unref?.();
     }
+    await this.update();
   }
 
   stop() {
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    if (this.tickTimer) clearInterval(this.tickTimer);
+    this.tickTimer = null;
   }
 
   // ---- matching ----------------------------------------------------------------------
@@ -275,7 +303,7 @@ export class OnCue {
       title: np.title ?? "",
       artist: np.artist ?? "",
       absPath: np.absPath,
-      played: np.played !== false,
+      played: confirmedPlay(np, Math.floor(this.now().getTime() / 1000)),
       songId: null,
       sectionId: null,
       how: null,
@@ -292,56 +320,88 @@ export class OnCue {
     }
     const note = matchNote(np, noteFragments(this.plan.doNotPlay.notes));
     if (note) return { ...base, how: "note", dnp: note };
-    const hit = findSong(np, songs.filter((s) => !s.dnpSection));
+    // Same song more than once in the plan: show the must-play one.
+    const plain = songs.filter((s) => !s.dnpSection);
+    const hit = findSong(np, [...plain.filter((s) => s.mustPlay), ...plain.filter((s) => !s.mustPlay)]);
     if (hit) return { ...base, songId: hit.song.id, sectionId: hit.song.sectionId, how: hit.how, mustPlay: hit.song.mustPlay };
     return base;
   }
 
-  /** Tick off plan songs already played tonight (On Cue opened mid-set, or restarted). */
-  private async replayTonight() {
-    if (!this.plan) return;
+  /** Tonight's history (On Cue opened mid-set, restarted, or Serato rewrote a flag) + the decks. */
+  private async readTonight(): Promise<NowPlaying[]> {
     const since = Math.floor(this.now().getTime() / 1000) - 14 * 3600;
     let entries: NowPlaying[] = [];
     try { entries = await readRecentEntries(since, this.opts.seratoDir); } catch { /* no history */ }
+    // The live deck entries are the freshest copy of their own rows.
+    const key = (e: NowPlaying) => `${e.id}|${e.startTime ?? ""}|${e.deck ?? ""}`;
+    const byKey = new Map(entries.map((e) => [key(e), e]));
+    for (const e of Object.values(this.lastDeckState?.decks ?? {})) byKey.set(key(e), e);
+    return [...byKey.values()];
+  }
+
+  /** Re-derive the ticks from tonight's history; fold in the CRM's and the DJ's own. */
+  private recompute() {
+    const nowSec = Math.floor(this.now().getTime() / 1000);
     const songs = this.allSongs().filter((s) => !s.dnpSection);
-    for (const e of entries) {
-      if (e.played === false) continue;
-      const hit = findSong(e, songs);
-      if (hit && !this.played.has(hit.song.id) && !this.manualOff.has(hit.song.id)) {
-        this.played.set(hit.song.id, new Date((e.startTime ?? 0) * 1000).toISOString());
+    this.autoPlayed.clear();
+    for (const e of [...this.tonight].sort((a, b) => (a.startTime ?? 0) - (b.startTime ?? 0))) {
+      if (!confirmedPlay(e, nowSec)) continue;
+      for (const song of findAllSongs(e, songs)) {
+        if (!this.autoPlayed.has(song.id)) this.autoPlayed.set(song.id, new Date((e.startTime ?? 0) * 1000).toISOString());
       }
+    }
+    // Songs Serato now says were only loaded (flag rewritten to 0) and never really played
+    // tonight: a stamp from earlier doesn't stand.
+    const loadedOnly = new Set<string>();
+    for (const e of this.tonight) {
+      if (e.played !== false) continue;
+      for (const song of findAllSongs(e, songs)) if (!this.autoPlayed.has(song.id)) loadedOnly.add(song.id);
+    }
+    const crm = [...this.crmPlayed].filter(([id]) => !loadedOnly.has(id));
+    const next = new Map<string, string>([...crm, ...this.autoPlayed, ...this.manualOn]);
+    for (const id of this.manualOff) next.delete(id);
+    this.played = next;
+  }
+
+  private updating = false;
+  private updateAgain = false;
+
+  /** Re-read, re-match, re-tick, re-render, report. Serialized. */
+  private async update(): Promise<void> {
+    if (this.updating) { this.updateAgain = true; return; }
+    this.updating = true;
+    try {
+      if (this.plan) this.tonight = await this.readTonight();
+      this.decks = Object.entries(this.lastDeckState?.decks ?? {})
+        .map(([d, np]) => this.classify(np, Number(d)))
+        .sort((a, b) => a.deck - b.deck);
+      this.recompute();
+      this.emit();
+      await this.report();
+    } finally {
+      this.updating = false;
+      if (this.updateAgain) { this.updateAgain = false; void this.update(); }
     }
   }
 
   /** Serato changed something on the decks. */
-  onDecks(state: DeckState, report = true): void {
+  onDecks(state: DeckState): void {
     this.lastDeckState = state;
-    // Only the tracks on the decks right now (no end time, or the newest per deck).
-    this.decks = Object.entries(state.decks)
-      .map(([d, np]) => this.classify(np, Number(d)))
-      .sort((a, b) => a.deck - b.deck);
-    const newlyPlayed: DeckMatch[] = [];
-    for (const d of this.decks) {
-      if (d.played && d.songId && !d.dnp && !this.played.has(d.songId) && !this.manualOff.has(d.songId)) {
-        this.played.set(d.songId, new Date((d.startTime ?? Math.floor(this.now().getTime() / 1000)) * 1000).toISOString());
-        newlyPlayed.push(d);
-      }
-    }
-    this.emit();
-    if (report) void this.report(newlyPlayed);
+    void this.update();
   }
 
   /** The DJ ticked or un-ticked a song by hand. */
   toggle(songId: string, on: boolean) {
     if (on) {
-      this.played.set(songId, this.now().toISOString());
+      this.manualOn.set(songId, this.now().toISOString());
       this.manualOff.delete(songId);
     } else {
-      this.played.delete(songId);
+      this.manualOn.delete(songId);
       this.manualOff.add(songId);
     }
+    this.recompute();
     this.emit();
-    if (on) void this.report([]);
+    void this.report();
   }
 
   // ---- telling the CRM -------------------------------------------------------------
@@ -368,7 +428,7 @@ export class OnCue {
   private reporting = false;
   private reportAgain = false;
 
-  private async report(_newlyPlayed: DeckMatch[]) {
+  private async report() {
     if (!this.plan || !this.isEventNight()) return; // only on the night
     if (this.reporting) { this.reportAgain = true; return; }
     this.reporting = true;
@@ -376,7 +436,7 @@ export class OnCue {
       await this.reportOnce();
     } finally {
       this.reporting = false;
-      if (this.reportAgain) { this.reportAgain = false; void this.report([]); }
+      if (this.reportAgain) { this.reportAgain = false; void this.report(); }
     }
   }
 
@@ -384,10 +444,19 @@ export class OnCue {
     // Every plan song played tonight that the CRM hasn't stamped yet — including ones found in
     // tonight's history and ones ticked by hand. markOnly: stamp it, don't touch "now playing".
     const songs = new Map(this.allSongs().map((s) => [s.id, s]));
-    for (const id of this.played.keys()) {
+    for (const [id, at] of this.played) {
       const s = songs.get(id);
       if (!s || this.reported.has(id)) continue;
-      if (await this.post({ title: s.title, artist: s.artist, played: true, songId: id, markOnly: true })) this.reported.add(id);
+      if (await this.post({ title: s.title, artist: s.artist, played: true, songId: id, markOnly: true, playedAt: at })) this.reported.add(id);
+    }
+    // …and un-stamp what's no longer played: un-ticked by hand, or Serato rewrote it as never played.
+    for (const id of [...this.reported]) {
+      if (this.played.has(id) || !songs.has(id)) continue;
+      const s = songs.get(id)!;
+      if (await this.post({ title: s.title, artist: s.artist, played: false, songId: id, markOnly: true })) {
+        this.reported.delete(id);
+        this.crmPlayed.delete(id);
+      }
     }
     // What the lock screen should show: a loaded do-not-play first, else what's playing.
     const alert = this.alertDeck();

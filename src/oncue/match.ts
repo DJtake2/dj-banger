@@ -89,9 +89,14 @@ export function artistSet(artist?: string): Set<string> {
 /** "the killers" ≈ "killers". */
 const bare = (a: string) => a.replace(/^the\s+/, "");
 
+/** The whole credit as one name — "Earth, Wind & Fire" ≈ "Earth Wind and Fire". */
+const wholeArtist = (a?: string) => bare(strip(a ?? "").replace(/[^a-z0-9]+/g, " ").trim());
+
 export function artistsOverlap(a?: string, b?: string): boolean {
-  const A = [...artistSet(a)].map(bare);
-  const B = new Set([...artistSet(b)].map(bare));
+  // Individual artists ("Gotye feat. Kimbra" ∋ "gotye") AND the whole credit, so a band whose
+  // name has a comma or an ampersand in it isn't split into "earth" / "wind" / "fire".
+  const A = [...[...artistSet(a)].map(bare), wholeArtist(a)].filter(Boolean);
+  const B = new Set([...[...artistSet(b)].map(bare), wholeArtist(b)].filter(Boolean));
   return A.some((x) => B.has(x));
 }
 
@@ -106,6 +111,11 @@ export function matchSong(track: DeckTrackLike, song: PlanSongLike): MatchHow | 
   // Same title: the artists must agree too, unless the plan has none (a song typed by hand).
   if (!song.artist.trim()) return "song";
   return artistsOverlap(track.artist, song.artist) ? "song" : null;
+}
+
+/** Every plan song this track is (the same song can sit in two sections, or be added twice). */
+export function findAllSongs<S extends PlanSongLike>(track: DeckTrackLike, songs: S[]): S[] {
+  return songs.filter((s) => matchSong(track, s));
 }
 
 /** The first plan song this track is, preferring an exact file match over a title match. */

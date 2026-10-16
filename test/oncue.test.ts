@@ -8,7 +8,7 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { titleCore, matchSong, findSong, noteFragments, matchNote } from "../src/oncue/match.ts";
-import { OnCue, type Plan, type OnCueSnapshot } from "../src/oncue/onCue.ts";
+import { OnCue, confirmedPlay, type Plan, type OnCueSnapshot } from "../src/oncue/onCue.ts";
 import { getDecks, readRecentEntries } from "../src/serato/history.ts";
 
 // --- session encoder (same shape as serato.test.ts) ---
@@ -45,6 +45,7 @@ test("a song matches by file first, then by title + artist — never by artist a
   assert.equal(matchSong({ title: "Don't Stop Believin'", artist: "Glee Cast" }, song), null, "a cover isn't the same song");
   assert.equal(matchSong({ title: "Somebody That I Used to Know", artist: "Gotye feat. Kimbra" }, { id: "x", title: "Somebody That I Used To Know (feat. Kimbra)", artist: "Gotye" }), "song");
   assert.equal(matchSong({ title: "Hey Ya!", artist: "The OutKast" }, { id: "x", title: "Hey Ya", artist: "OutKast" }), "song");
+  assert.equal(matchSong({ title: "September", artist: "Earth Wind and Fire" }, { id: "x", title: "September", artist: "Earth, Wind & Fire" }), "song", "band names with commas / &");
   assert.equal(matchSong({ title: "V.I.C. - Wobble", artist: "V.I.C." }, { id: "x", title: "Wobble", artist: "V.I.C." }), "song", "DJ-pool 'Artist - Title' titles");
   assert.equal(matchSong({ title: "The Isley Brothers - Shout", artist: "The Isley Brothers" }, { id: "x", title: "Shout", artist: "Isley Brothers" }), "song");
   assert.equal(matchSong({ title: "Signed, Sealed, Delivered I'm Yours", artist: "Stevie Wonder" }, { id: "x", title: "Signed, Sealed, Delivered (I'm Yours)", artist: "Stevie Wonder" }), "song", "a bracket that is part of the title");
@@ -63,7 +64,17 @@ test("free-text do-not-play notes only match whole titles", () => {
   assert.equal(matchNote({ title: "Slide", artist: "Goo Goo Dolls" }, frags), null);
 });
 
-test("Serato's played flag: loaded = 0, played = 1; tonight's history is read across sessions", async () => {
+test("played = still flagged AND a minute on the deck (finished or not) — Serato 3 flags a fresh load as played", () => {
+  const now = 10_000;
+  assert.equal(confirmedPlay({ played: true, startTime: now - 5 }, now), false, "just loaded (Serato already says 1)");
+  assert.equal(confirmedPlay({ played: true, startTime: now - 75 }, now), true, "on the deck over a minute");
+  assert.equal(confirmedPlay({ played: true, startTime: now - 300, endTime: now - 290 }, now), false, "swapped out after 10s");
+  assert.equal(confirmedPlay({ played: true, startTime: now - 300, endTime: now - 259 }, now), false, "41s load-and-swap (seen live on Serato 3.3.5)");
+  assert.equal(confirmedPlay({ played: true, startTime: now - 300, endTime: now - 60 }, now), true);
+  assert.equal(confirmedPlay({ played: false, startTime: now - 300, endTime: now - 60 }, now), false, "Serato rewrote it as never played");
+});
+
+test("Serato's played flag is read; tonight's history is read across sessions", async () => {
   const dir = await seratoWith([
     entry({ 2: "/m/a.mp3", 6: "A Bar Song {Tipsy} (Clean)", 7: "Shaboozey", 31: 1, 28: 1000, 29: 1078, 45: 78, 50: 0 }),
     entry({ 2: "/m/b.mp3", 6: "Dancing Queen", 7: "ABBA", 31: 1, 28: 1078, 50: 1 }),
@@ -90,6 +101,8 @@ const plan = (date: string): Plan => ({
     { id: "od", name: "Open Dancing", group: "Dancing", time: null, at: null, doNotPlay: false, notes: null, description: null, answers: [],
       songs: [
         { id: "s-dq", title: "Dancing Queen", artist: "ABBA", isrc: null, mustPlay: true, flagged: false, notes: null, addedBy: null, path: null, playedAt: null },
+        { id: "s-dq2", title: "Dancing Queen", artist: "ABBA", isrc: null, mustPlay: false, flagged: false, notes: null, addedBy: "Guest", path: null, playedAt: null },
+        { id: "s-sep", title: "September", artist: "Earth, Wind & Fire", isrc: null, mustPlay: false, flagged: false, notes: null, addedBy: null, path: null, playedAt: null },
         { id: "s-mb", title: "Mr. Brightside", artist: "The Killers", isrc: null, mustPlay: false, flagged: false, notes: null, addedBy: null, path: null, playedAt: "2026-10-17T21:00:00.000Z" },
       ] },
     { id: "dnp", name: "Do Not Play", group: "Do Not Play", time: null, at: null, doNotPlay: true, notes: null, description: null, answers: [],
@@ -118,7 +131,12 @@ test("On Cue: picks today's event, ticks must-plays on PLAY, alerts on a LOADED 
   const now = new Date(); // real clock: the fake history file is written now
   const day = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   // History: the first dance already went out before On Cue opened.
-  const seratoDir = await seratoWith([entry({ 2: "/m/perfect.mp3", 6: "Perfect", 7: "Ed Sheeran", 31: 1, 28: Math.floor(now.getTime() / 1000) - 3600, 50: 1 })]);
+  const T = Math.floor(now.getTime() / 1000);
+  const seratoDir = await seratoWith([
+    entry({ 2: "/m/perfect.mp3", 6: "Perfect", 7: "Ed Sheeran", 31: 1, 28: T - 3600, 29: T - 3400, 50: 1 }),
+    // Loaded for a moment and swapped — Serato rewrote it to 0: not played.
+    entry({ 2: "/m/sep.mp3", 6: "September", 7: "Earth, Wind & Fire", 31: 2, 28: T - 3000, 29: T - 2990, 50: 0 }),
+  ]);
   const { f, posts } = fakeCrm(plan(day));
   let snap: OnCueSnapshot | null = null;
   const oc = new OnCue({}, { cacheDir: await mkdtemp(join(tmpdir(), "oncue-cache-")), seratoDir, fetch: f, now: () => now, onChange: (s) => (snap = s) });
@@ -126,6 +144,7 @@ test("On Cue: picks today's event, ticks must-plays on PLAY, alerts on a LOADED 
   oc.stop();
   assert.equal(snap!.eventId, "ev1", "today's event chosen on its own");
   assert.ok(snap!.played["s-fd"], "first dance ticked from tonight's history");
+  assert.equal(snap!.played["s-sep"], undefined, "a 10-second load isn't a play");
   assert.ok(snap!.played["s-mb"], "a play the CRM already knew about stays ticked");
   assert.deepEqual(snap!.mustPlay, { total: 2, played: 1 });
 
@@ -133,37 +152,42 @@ test("On Cue: picks today's event, ticks must-plays on PLAY, alerts on a LOADED 
   const np = (deck: number, title: string, artist: string, played: boolean, start: number) =>
     ({ id: `m/${title}`, absPath: `/m/${title}.mp3`, title, artist, deck, played, startTime: start, sessionFile: "", entryIndex: 0 });
 
-  // Cha Cha Slide LOADED on deck 2 (not played) → alert + reported as a loaded DNP.
-  oc.onDecks({ decks: { 1: np(1, "Dancing Queen", "ABBA", false, t), 2: np(2, "Cha Cha Slide (Clean)", "DJ Casper", false, t + 5) }, activeDeck: 2, sessionFile: null, sessionMtime: null });
+  // Cha Cha Slide just LOADED on deck 2 (Serato already flags it played) → alert + reported as a loaded DNP.
+  oc.onDecks({ decks: { 1: np(1, "Dancing Queen", "ABBA", true, t - 2), 2: np(2, "Cha Cha Slide (Clean)", "DJ Casper", true, t - 1) }, activeDeck: 2, sessionFile: null, sessionMtime: null });
   await tick();
   assert.equal(snap!.alert?.dnp, "Cha Cha Slide — DJ Casper");
   assert.equal(snap!.alert?.played, false);
-  assert.equal(snap!.played["s-dq"], undefined, "loaded isn't played");
+  assert.equal(snap!.played["s-dq"], undefined, "two seconds on the deck isn't played");
   assert.deepEqual(posts.at(-1), { title: "Cha Cha Slide (Clean)", artist: "DJ Casper", deck: 2, played: false, dnp: "Cha Cha Slide — DJ Casper" });
   assert.ok(posts.some((p) => p.songId === "s-fd" && p.markOnly === true), "a play found in tonight's history is stamped on the plan");
 
-  // Swapped out for Dancing Queen on deck 2, which then PLAYS → ticked + reported with its songId.
-  oc.onDecks({ decks: { 1: np(1, "Dancing Queen", "ABBA", false, t), 2: np(2, "Dancing Queen", "ABBA", true, t + 30) }, activeDeck: 2, sessionFile: null, sessionMtime: null });
+  // Swapped out; Dancing Queen has now been on air for a minute and a half → ticked + stamped.
+  oc.onDecks({ decks: { 1: np(1, "Mr. Brightside", "The Killers", true, t - 400), 2: np(2, "Dancing Queen", "ABBA", true, t - 90) }, activeDeck: 2, sessionFile: null, sessionMtime: null });
   await tick();
   assert.equal(snap!.alert, null, "alert cleared once the do-not-play left the deck");
   assert.ok(snap!.played["s-dq"]);
   assert.deepEqual(snap!.mustPlay, { total: 2, played: 2 });
+  assert.ok(snap!.played["s-dq2"], "a second copy of the same song is ticked too");
+  assert.equal(snap!.decks.find((d) => d.deck === 2)?.mustPlay, true, "the deck shows the must-play copy");
   assert.ok(posts.some((p) => p.songId === "s-dq" && p.played === true && p.markOnly === true));
   assert.ok(!posts.some((p) => p.songId === "s-mb"), "already stamped in the CRM — not sent again");
   const n = posts.length;
 
   // Same state again → nothing new sent.
-  oc.onDecks({ decks: { 1: np(1, "Dancing Queen", "ABBA", false, t), 2: np(2, "Dancing Queen", "ABBA", true, t + 30) }, activeDeck: 2, sessionFile: null, sessionMtime: null });
+  oc.onDecks({ decks: { 1: np(1, "Mr. Brightside", "The Killers", true, t - 400), 2: np(2, "Dancing Queen", "ABBA", true, t - 90) }, activeDeck: 2, sessionFile: null, sessionMtime: null });
   await tick();
   assert.equal(posts.length, n);
 
   // Free-text note match.
-  oc.onDecks({ decks: { 1: np(1, "Cotton Eye Joe", "Rednex", false, t + 60) }, activeDeck: 1, sessionFile: null, sessionMtime: null });
+  oc.onDecks({ decks: { 1: np(1, "Cotton Eye Joe", "Rednex", true, t) }, activeDeck: 1, sessionFile: null, sessionMtime: null });
+  await tick();
   assert.equal(snap!.alert?.how, "note");
 
-  // Manual un-tick sticks.
+  // Manual un-tick sticks, and the CRM stamp is taken back.
   oc.toggle("s-dq", false);
+  await tick();
   assert.equal(snap!.played["s-dq"], undefined);
+  assert.ok(posts.some((p) => p.songId === "s-dq" && p.played === false && p.markOnly === true));
   assert.ok(oc.dnpFilter()({ title: "Cha Cha Slide", artist: "DJ Casper" }));
   assert.ok(!oc.dnpFilter()({ title: "Dancing Queen", artist: "ABBA" }));
 });
@@ -177,7 +201,7 @@ test("On Cue: offline uses the cached plan; nothing is reported on other days", 
   await a.configure({ crmUrl: "https://crm.example.com", key: "oc1.k.s" });
   await a.select("ev1");
   a.stop();
-  a.onDecks({ decks: { 1: { id: "x", absPath: "/m/x.mp3", title: "Dancing Queen", artist: "ABBA", deck: 1, played: true, startTime: 1, sessionFile: "", entryIndex: 0 } }, activeDeck: 1, sessionFile: null, sessionMtime: null });
+  a.onDecks({ decks: { 1: { id: "x", absPath: "/m/x.mp3", title: "Dancing Queen", artist: "ABBA", deck: 1, played: true, startTime: Math.floor(now.getTime() / 1000) - 120, sessionFile: "", entryIndex: 0 } }, activeDeck: 1, sessionFile: null, sessionMtime: null });
   await tick();
   assert.equal(posts.length, 0, "a week early: tick locally, don't touch the CRM");
 
